@@ -322,19 +322,525 @@ class BasicAgent(Agent):
             traceback.print_exc()
             return self._random_action()
 
-class NewAgent(Agent):
-    """自定义 Agent 模板（待学生实现）"""
+class NewAgent(BasicAgent):
+    """增强版 Agent：噪声鲁棒 + 局面控制"""
+    
+    SOLID_IDS = tuple(str(i) for i in range(1, 8))
+    STRIPE_IDS = tuple(str(i) for i in range(9, 16))
     
     def __init__(self):
-        pass
+        super().__init__()
+        # 搜索与评估配置
+        self.INITIAL_SEARCH = 14
+        self.OPT_SEARCH = 8
+        self.robust_samples = 4
+        self.enable_noise = False  # 使用自定义噪声采样
+        
+        # 策略超参数
+        self.cue_next_ball_radius = 1.4
+        self.cue_next_ball_weight = 22.0
+        self.enemy_threat_radius = 1.0
+        self.enemy_distance_weight = 18.0
+        self.eight_guard_radius = 0.13
+        self.eight_guard_weight = 45.0
+        self.safety_trigger_score = 30.0
+        self.safety_prefer_margin = 8.0
+        self.safe_speed_bounds = (2.4, 3.2)
+        self.no_rail_penalty = 80.0
+        self.white_scratch_penalty = 220.0
+        self.illegal_black_penalty = 300.0
+        self.cue_edge_margin = 0.18
+        self.cue_edge_weight = 20.0
+        
+        # 记录自己是实心还是条纹，方便推断对手
+        self.my_target_type = None  # 'solid' / 'stripe'
+        
+        print("NewAgent (robust + strategic) 已初始化。")
     
     def decision(self, balls=None, my_targets=None, table=None):
-        """决策方法
+        """噪声鲁棒 + 局面控制的决策方法"""
+        if balls is None or table is None:
+            print("[NewAgent] 缺少关键观测，使用随机动作。")
+            return self._random_action()
         
-        参数：
-            observation: (balls, my_targets, table)
+        try:
+            prepared_targets = self._prepare_targets(balls, my_targets)
+            last_state_snapshot = {bid: copy.deepcopy(ball) for bid, ball in balls.items()}
+            
+            def reward_fn_wrapper(V0, phi, theta, a, b):
+                return self._evaluate_action(
+                    V0=V0,
+                    phi=phi,
+                    theta=theta,
+                    a=a,
+                    b=b,
+                    balls=balls,
+                    table=table,
+                    last_state_snapshot=last_state_snapshot,
+                    player_targets=prepared_targets
+                )
+            
+            print(f"[NewAgent] 搜索击球方案 (targets={prepared_targets}) ...")
+            seed = np.random.randint(1e6)
+            optimizer = self._create_optimizer(reward_fn_wrapper, seed)
+            optimizer.maximize(
+                init_points=self.INITIAL_SEARCH,
+                n_iter=self.OPT_SEARCH
+            )
+            
+            best_result = optimizer.max
+            best_score = best_result['target']
+            best_params = best_result['params']
+            if best_score is None or np.isnan(best_score):
+                print("[NewAgent] 搜索失败，返回随机动作。")
+                return self._random_action()
+            
+            action = {
+                'V0': float(best_params['V0']),
+                'phi': float(best_params['phi']),
+                'theta': float(best_params['theta']),
+                'a': float(best_params['a']),
+                'b': float(best_params['b'])
+            }
+            print(f"[NewAgent] 最佳动作得分 {best_score:.2f}: "
+                  f"V0={action['V0']:.2f}, phi={action['phi']:.2f}, "
+                  f"θ={action['theta']:.2f}, a={action['a']:.3f}, b={action['b']:.3f}")
+            
+            # 评估安全球候选，必要时切换
+            allow_safety = self._allow_safety_play(prepared_targets)
+            safe_action = None
+            safe_score = -500
+            if allow_safety:
+                safety_candidates = self._plan_safety_shot(balls, table)
+                safe_action, safe_score = self._select_best_candidate(
+                    safety_candidates, reward_fn_wrapper
+                )
+                if safe_action is not None:
+                    print(f"[NewAgent] 安全球候选得分 {safe_score:.2f}")
+            safe_validation = None
+            if safe_action is not None:
+                safe_validation = self._simulate_action_outcome(
+                    safe_action, balls, table, prepared_targets, last_state_snapshot
+                )
+            
+            if safe_action is not None:
+                prefer_safe = (
+                    best_score < self.safety_trigger_score
+                    and safe_score >= best_score + self.safety_prefer_margin
+                )
+                force_safe = safe_score >= best_score + self.safety_prefer_margin * 2.0
+                if prefer_safe or force_safe:
+                    safe_ok = safe_validation is not None and safe_validation[0]
+                    safe_danger = safe_validation and self._action_is_dangerous(
+                        safe_validation[1], prepared_targets
+                    )
+                    if safe_ok and not safe_danger:
+                        print("[NewAgent] 选择安全球方案。")
+                        return safe_action
+                    print("[NewAgent] 安全球候选验证失败，继续尝试进攻。")
+            
+            if best_score < 10:
+                print("[NewAgent] 得分过低，使用随机动作兜底。")
+                return self._random_action()
+            action_ok, action_info = self._simulate_action_outcome(
+                action, balls, table, prepared_targets, last_state_snapshot
+            )
+            action_danger = action_info if action_info else {}
+            if (not action_ok) or self._action_is_dangerous(action_danger, prepared_targets):
+                reason = []
+                if action_info:
+                    if action_info.get('WHITE_BALL_INTO_POCKET'):
+                        reason.append("白球落袋")
+                    if action_info.get('ILLEGAL_BLACK'):
+                        reason.append("非法黑8")
+                    if action_info.get('NO_POCKET_NO_RAIL'):
+                        reason.append("无进球且未碰库")
+                msg = "、".join(reason) if reason else "模拟失败"
+                print(f"[NewAgent] 决策被否决：{msg}，尝试安全兜底。")
+                fallback = self._fallback_safe_action(
+                    safe_action=safe_action,
+                    safe_validation=safe_validation,
+                    balls=balls,
+                    table=table,
+                    player_targets=prepared_targets,
+                    last_state_snapshot=last_state_snapshot,
+                    scorer=reward_fn_wrapper
+                )
+                if fallback is not None:
+                    return fallback
+                print("[NewAgent] 无可行安全球，使用随机动作兜底。")
+                return self._random_action()
+            return action
         
-        返回：
-            dict: {'V0', 'phi', 'theta', 'a', 'b'}
-        """
-        return self._random_action()
+        except Exception as exc:
+            print(f"[NewAgent] 决策错误，改用随机动作：{exc}")
+            import traceback
+            traceback.print_exc()
+            return self._random_action()
+    
+    def _prepare_targets(self, balls, my_targets):
+        """规范化目标球列表，并更新己方球型"""
+        if not my_targets:
+            return ['8']
+        valid = [bid for bid in my_targets if bid in balls]
+        if not valid:
+            return ['8']
+        if not (len(valid) == 1 and valid[0] == '8'):
+            self._update_target_type(valid)
+            remaining = [bid for bid in valid if balls[bid].state.s != 4]
+            if remaining:
+                return remaining
+        return ['8']
+    
+    def _allow_safety_play(self, prepared_targets):
+        """判断当前是否允许执行保守安全球"""
+        if not prepared_targets:
+            return False
+        if len(prepared_targets) <= 3:
+            return False
+        if len(prepared_targets) == 1 and prepared_targets[0] == '8':
+            return False
+        return True
+    
+    def _update_target_type(self, target_ids):
+        """根据当前可见目标球推断我方球型"""
+        if not target_ids or (len(target_ids) == 1 and target_ids[0] == '8'):
+            return
+        if any(tid in self.SOLID_IDS for tid in target_ids):
+            self.my_target_type = 'solid'
+        elif any(tid in self.STRIPE_IDS for tid in target_ids):
+            self.my_target_type = 'stripe'
+    
+    def _evaluate_action(self, V0, phi, theta, a, b, balls, table, last_state_snapshot, player_targets):
+        """带噪声 Monte Carlo 的动作评估"""
+        scores = []
+        for _ in range(self.robust_samples):
+            sim_balls = {bid: copy.deepcopy(ball) for bid, ball in balls.items()}
+            sim_table = copy.deepcopy(table)
+            cue = pt.Cue(cue_ball_id="cue")
+            shot = pt.System(table=sim_table, balls=sim_balls, cue=cue)
+            
+            noisy_params = self._sample_noisy_params(V0, phi, theta, a, b)
+            shot.cue.set_state(**noisy_params)
+            try:
+                pt.simulate(shot, inplace=True)
+            except Exception:
+                return -500.0
+            
+            pocketed = self._pocketed_since_last(shot, last_state_snapshot)
+            base_score = analyze_shot_for_reward(
+                shot=shot,
+                last_state=last_state_snapshot,
+                player_targets=player_targets
+            )
+            strategic_bonus = self._strategic_bonus(
+                shot=shot,
+                table=sim_table,
+                player_targets=player_targets
+            )
+            rail_bonus = self._rail_awareness_bonus(shot, pocketed)
+            cue_edge_bonus = self._cue_edge_bonus(shot, table)
+            scratch_penalty = self._white_ball_penalty(shot, pocketed)
+            black_penalty = self._illegal_black_penalty(pocketed, player_targets)
+            scores.append(base_score + strategic_bonus + rail_bonus + cue_edge_bonus + scratch_penalty + black_penalty)
+        
+        return float(np.mean(scores))
+    
+    def _sample_noisy_params(self, V0, phi, theta, a, b):
+        """按照评测噪声标准差采样动作"""
+        noisy = {
+            'V0': V0 + np.random.normal(0, self.noise_std['V0']),
+            'phi': phi + np.random.normal(0, self.noise_std['phi']),
+            'theta': theta + np.random.normal(0, self.noise_std['theta']),
+            'a': a + np.random.normal(0, self.noise_std['a']),
+            'b': b + np.random.normal(0, self.noise_std['b'])
+        }
+        noisy['V0'] = float(np.clip(noisy['V0'], *self.pbounds['V0']))
+        noisy['phi'] = float(noisy['phi'] % 360)
+        noisy['theta'] = float(np.clip(noisy['theta'], *self.pbounds['theta']))
+        noisy['a'] = float(np.clip(noisy['a'], *self.pbounds['a']))
+        noisy['b'] = float(np.clip(noisy['b'], *self.pbounds['b']))
+        return noisy
+    
+    def _strategic_bonus(self, shot, table, player_targets):
+        """根据局面优劣增加额外奖励"""
+        cue_pos = np.array(shot.balls['cue'].state.rvw[0][:2], dtype=float)
+        bonus = 0.0
+        
+        remaining_targets = self._remaining_targets_after_shot(shot, player_targets)
+        own_positions = [
+            np.array(shot.balls[bid].state.rvw[0][:2], dtype=float)
+            for bid in remaining_targets
+            if bid in shot.balls and shot.balls[bid].state.s != 4
+        ]
+        if own_positions:
+            min_dist = min(np.linalg.norm(cue_pos - pos) for pos in own_positions)
+            bonus += max(0.0, self.cue_next_ball_radius - min_dist) * self.cue_next_ball_weight
+        
+        enemy_positions = [
+            np.array(shot.balls[bid].state.rvw[0][:2], dtype=float)
+            for bid in self._enemy_target_ids()
+            if bid in shot.balls and shot.balls[bid].state.s != 4
+        ]
+        if enemy_positions:
+            near_enemy = min(np.linalg.norm(cue_pos - pos) for pos in enemy_positions)
+            bonus -= max(0.0, self.enemy_threat_radius - near_enemy) * self.enemy_distance_weight
+        
+        if not (len(player_targets) == 1 and player_targets[0] == '8'):
+            black_ball = shot.balls.get('8')
+            if black_ball is not None and black_ball.state.s != 4:
+                black_pos = np.array(black_ball.state.rvw[0][:2], dtype=float)
+                min_pocket_dist = min(
+                    np.linalg.norm(black_pos - np.array(pocket.center[:2]))
+                    for pocket in table.pockets.values()
+                )
+                if min_pocket_dist < self.eight_guard_radius:
+                    bonus -= (self.eight_guard_radius - min_pocket_dist) * self.eight_guard_weight
+        
+        return bonus
+    
+    def _pocketed_since_last(self, shot, last_state):
+        """返回相对于上一杆新进袋的球"""
+        pocketed = []
+        for bid, ball in shot.balls.items():
+            if bid not in last_state:
+                continue
+            if ball.state.s == 4 and last_state[bid].state.s != 4:
+                pocketed.append(bid)
+        return pocketed
+    
+    def _rail_awareness_bonus(self, shot, pocketed_ids):
+        """鼓励至少碰库，避免 NO_POCKET_NO_RAIL"""
+        if pocketed_ids:
+            return 0.0
+        for event in shot.events:
+            et = str(event.event_type).lower()
+            if 'cushion' in et:
+                return 0.0
+        return -self.no_rail_penalty
+    
+    def _white_ball_penalty(self, shot, pocketed_ids):
+        """白球落袋时的额外惩罚"""
+        if 'cue' in pocketed_ids:
+            return -self.white_scratch_penalty
+        for event in shot.events:
+            et = str(event.event_type).lower()
+            if 'pocket' in et and any(i == 'cue' for i in getattr(event, 'ids', [])):
+                return -self.white_scratch_penalty
+        return 0.0
+    
+    def _illegal_black_penalty(self, pocketed_ids, player_targets):
+        """非法打进黑8时施加额外惩罚"""
+        if '8' not in pocketed_ids:
+            return 0.0
+        legal = len(player_targets) == 1 and player_targets[0] == '8'
+        if legal:
+            return 0.0
+        return -self.illegal_black_penalty
+
+    def _remaining_targets_after_shot(self, shot, player_targets):
+        """计算该杆结束后仍需击打的球"""
+        valid = [bid for bid in player_targets if bid in shot.balls]
+        if not valid:
+            return ['8']
+        remaining = [bid for bid in valid if shot.balls[bid].state.s != 4]
+        if remaining:
+            return remaining
+        return ['8']
+    
+    def _enemy_target_ids(self):
+        """根据记录的我方球型推断对方球集合"""
+        if self.my_target_type == 'solid':
+            return self.STRIPE_IDS
+        if self.my_target_type == 'stripe':
+            return self.SOLID_IDS
+        return self.SOLID_IDS + self.STRIPE_IDS
+    
+    def _cue_edge_bonus(self, shot, table):
+        """奖励母球贴边，限制对手直线进攻"""
+        cue_pos = np.array(shot.balls['cue'].state.rvw[0][:2], dtype=float)
+        distances = [
+            cue_pos[0],
+            table.l - cue_pos[0],
+            cue_pos[1],
+            table.w - cue_pos[1]
+        ]
+        min_dist = min(distances)
+        if min_dist < self.cue_edge_margin:
+            return (self.cue_edge_margin - min_dist) * self.cue_edge_weight
+        return 0.0
+    
+    def _plan_safety_shot(self, balls, table):
+        """生成多个安全球候选（确保有明显的碰库或藏球倾向）"""
+        cue_ball = balls.get('cue')
+        if cue_ball is None:
+            return []
+        cue_pos = np.array(cue_ball.state.rvw[0][:2], dtype=float)
+        margin = 0.07
+        clamp_x = np.clip(cue_pos[0], margin, table.l - margin)
+        clamp_y = np.clip(cue_pos[1], margin, table.w - margin)
+        cushion_targets = [
+            np.array([margin, clamp_y]),
+            np.array([table.l - margin, clamp_y]),
+            np.array([clamp_x, margin]),
+            np.array([clamp_x, table.w - margin])
+        ]
+        two_bank_dirs = [
+            math.degrees(math.atan2(clamp_y - cue_pos[1], (table.l - margin) - cue_pos[0])),
+            math.degrees(math.atan2((table.w - margin) - cue_pos[1], clamp_x - cue_pos[0])),
+            math.degrees(math.atan2(margin - cue_pos[1], margin - cue_pos[0])),
+            math.degrees(math.atan2((table.w - margin) - cue_pos[1], (table.l - margin) - cue_pos[0]))
+        ]
+        candidates = []
+        base_speeds = np.linspace(self.safe_speed_bounds[0], self.safe_speed_bounds[1], num=3)
+        spin_options = [(-0.18, -0.08), (0.18, 0.06), (0.0, -0.12)]
+        for target_point in cushion_targets:
+            direction = target_point - cue_pos
+            if np.linalg.norm(direction) < 1e-6:
+                continue
+            phi = math.degrees(math.atan2(direction[1], direction[0])) % 360
+            for speed in base_speeds:
+                for spin in spin_options:
+                    candidates.append({
+                        'V0': float(speed),
+                        'phi': float(phi),
+                        'theta': 2.0,
+                        'a': float(spin[0]),
+                        'b': float(spin[1])
+                    })
+        for phi in two_bank_dirs:
+            for speed in base_speeds:
+                candidates.append({
+                    'V0': float(speed),
+                    'phi': float(phi % 360),
+                    'theta': 3.0,
+                    'a': 0.0,
+                    'b': -0.05
+                })
+        nearest_own = self._nearest_own_ball(balls)
+        if nearest_own is not None:
+            own_vec = nearest_own - cue_pos
+            if np.linalg.norm(own_vec) > 1e-3:
+                phi = math.degrees(math.atan2(own_vec[1], own_vec[0])) % 360
+                candidates.append({
+                    'V0': float(self.safe_speed_bounds[0]),
+                    'phi': float(phi),
+                    'theta': 0.5,
+                    'a': -0.2,
+                    'b': -0.08
+                })
+        return candidates
+    
+    def _nearest_own_ball(self, balls):
+        """返回最近己方球的位置"""
+        if self.my_target_type is None:
+            return None
+        ids = self.SOLID_IDS if self.my_target_type == 'solid' else self.STRIPE_IDS
+        cue_pos = np.array(balls['cue'].state.rvw[0][:2], dtype=float)
+        best = None
+        best_dist = None
+        for bid in ids:
+            ball = balls.get(bid)
+            if ball is None or ball.state.s == 4:
+                continue
+            pos = np.array(ball.state.rvw[0][:2], dtype=float)
+            dist = np.linalg.norm(pos - cue_pos)
+            if best is None or dist < best_dist:
+                best = pos
+                best_dist = dist
+        return best
+    
+    def _select_best_candidate(self, candidates, scorer):
+        """在候选动作中选取得分最高者"""
+        best_score = -np.inf
+        best_action = None
+        for action in candidates:
+            try:
+                score = scorer(**action)
+            except Exception:
+                score = -500
+            if score > best_score:
+                best_score = score
+                best_action = action
+        return best_action, best_score
+
+    def _fallback_safe_action(self, *, safe_action, safe_validation, balls, table,
+                              player_targets, last_state_snapshot, scorer):
+        """当主决策危险时尝试使用（或重新搜索）安全球"""
+        if safe_action is not None:
+            validation = safe_validation
+            if validation is None:
+                validation = self._simulate_action_outcome(
+                    safe_action, balls, table, player_targets, last_state_snapshot
+                )
+            if validation[0] and not self._action_is_dangerous(validation[1], player_targets):
+                print("[NewAgent] fallback: 使用先前评估的安全球。")
+                return safe_action
+        candidates = self._plan_safety_shot(balls, table)
+        if not candidates:
+            return None
+        alt_action, _ = self._select_best_candidate(candidates, scorer)
+        if alt_action is None:
+            return None
+        valid, info = self._simulate_action_outcome(
+            alt_action, balls, table, player_targets, last_state_snapshot
+        )
+        if valid and not self._action_is_dangerous(info, player_targets):
+            print("[NewAgent] fallback: 重新规划安全球成功。")
+            return alt_action
+        return None
+
+    def _simulate_action_outcome(self, action, balls, table, player_targets, last_state_snapshot):
+        """单次模拟，用于验证动作是否存在危险（白球、黑8、未碰库等）"""
+        sim_balls = {bid: copy.deepcopy(ball) for bid, ball in balls.items()}
+        sim_table = copy.deepcopy(table)
+        cue = pt.Cue(cue_ball_id="cue")
+        shot = pt.System(table=sim_table, balls=sim_balls, cue=cue)
+        try:
+            shot.cue.set_state(**action)
+            pt.simulate(shot, inplace=True)
+        except Exception:
+            return False, {'SIM_FAIL': True}
+        pocketed = self._pocketed_since_last(shot, last_state_snapshot)
+        info = {}
+        if pocketed:
+            own = [bid for bid in pocketed if bid in player_targets]
+            enemy = [
+                bid for bid in pocketed
+                if bid not in player_targets and bid not in ['cue']
+            ]
+            if own:
+                info['ME_INTO_POCKET'] = own
+            if enemy:
+                info['ENEMY_INTO_POCKET'] = enemy
+        if 'cue' in pocketed:
+            info['WHITE_BALL_INTO_POCKET'] = True
+        if '8' in pocketed:
+            info['BLACK_BALL_INTO_POCKET'] = True
+            legal = len(player_targets) == 1 and player_targets[0] == '8'
+            if not legal:
+                info['ILLEGAL_BLACK'] = True
+        non_white_pocket = [b for b in pocketed if b != 'cue']
+        if not non_white_pocket and not self._shot_hit_cushion(shot):
+            info['NO_POCKET_NO_RAIL'] = True
+        return True, info
+
+    def _shot_hit_cushion(self, shot):
+        """检查本杆是否有任何球触库"""
+        for event in shot.events:
+            et = str(event.event_type).lower()
+            if 'cushion' in et:
+                return True
+        return False
+
+    def _action_is_dangerous(self, info, player_targets):
+        """根据 step_info 判断动作是否危险"""
+        if not info:
+            return False
+        if info.get('WHITE_BALL_INTO_POCKET'):
+            return True
+        if info.get('ILLEGAL_BLACK'):
+            return True
+        if info.get('NO_POCKET_NO_RAIL'):
+            return True
+        return False
