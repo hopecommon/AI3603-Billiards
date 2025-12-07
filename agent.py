@@ -833,12 +833,6 @@ class NewAgent(BasicAgent):
             if score > best_score:
                 best_score = score
                 best_action = action
-        if best_action is not None:
-            valid_sim, sim_info = self._simulate_action_outcome(
-                best_action, balls, table, player_targets, last_state_snapshot
-            )
-            if valid_sim and sim_info.get('NO_POCKET_NO_RAIL'):
-                return None, current_score
         return best_action, best_score
 
     def _prepare_fallback_action(self, *, safe_action, safe_validation, balls, table,
@@ -892,6 +886,12 @@ class NewAgent(BasicAgent):
             if combined > best_score:
                 best_score = combined
                 best_action = action
+        if best_action is not None:
+            sim_valid, sim_info = self._simulate_action_outcome(
+                best_action, balls, table, player_targets, last_state_snapshot
+            )
+            if sim_valid and sim_info.get('NO_POCKET_NO_RAIL'):
+                return None, current_score
         return best_action, best_score
 
     def _generate_attack_candidates(self, balls, table, player_targets, max_candidates=12):
