@@ -16,6 +16,7 @@ import copy
 import os
 from datetime import datetime
 import random
+import signal
 # from poolagent.pool import Pool as CuetipEnv, State as CuetipState
 # from poolagent import FunctionAgent
 
@@ -295,7 +296,7 @@ class BasicAgent(Agent):
                 init_points=self.INITIAL_SEARCH,
                 n_iter=self.OPT_SEARCH
             )
-            
+
             best_result = optimizer.max
             best_params = best_result['params']
             best_score = best_result['target']
@@ -351,6 +352,8 @@ class NewAgent(BasicAgent):
         self.illegal_black_penalty = 300.0
         self.cue_edge_margin = 0.18
         self.cue_edge_weight = 20.0
+        self.shot_timeout = 5 * 60
+        self.fallback_score_threshold = 30.0
         
         # 记录自己是实心还是条纹，方便推断对手
         self.my_target_type = None  # 'solid' / 'stripe'
@@ -383,11 +386,22 @@ class NewAgent(BasicAgent):
             print(f"[NewAgent] 搜索击球方案 (targets={prepared_targets}) ...")
             seed = np.random.randint(1e6)
             optimizer = self._create_optimizer(reward_fn_wrapper, seed)
-            optimizer.maximize(
-                init_points=self.INITIAL_SEARCH,
-                n_iter=self.OPT_SEARCH
-            )
-            
+            timed_out = False
+            prev_handler = signal.getsignal(signal.SIGALRM)
+            try:
+                signal.signal(signal.SIGALRM, self._shot_alarm_handler)
+                signal.alarm(self.shot_timeout)
+                optimizer.maximize(
+                    init_points=self.INITIAL_SEARCH,
+                    n_iter=self.OPT_SEARCH
+                )
+            except TimeoutError:
+                timed_out = True
+                print(f"[NewAgent] 由于耗时超过{self.shot_timeout}s，提前终止搜索。")
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, prev_handler)
+
             best_result = optimizer.max
             best_score = best_result['target']
             best_params = best_result['params']
@@ -438,7 +452,21 @@ class NewAgent(BasicAgent):
                         print("[NewAgent] 选择安全球方案。")
                         return safe_action
                     print("[NewAgent] 安全球候选验证失败，继续尝试进攻。")
-            
+
+            fallback_needed = timed_out or best_score < self.fallback_score_threshold
+            if fallback_needed:
+                fallback_action = self._prepare_fallback_action(
+                    safe_action=safe_action,
+                    safe_validation=safe_validation,
+                    balls=balls,
+                    table=table,
+                    player_targets=prepared_targets,
+                    last_state_snapshot=last_state_snapshot
+                )
+                if fallback_action is not None:
+                    print("[NewAgent] 使用启发式保守策略替代原始搜索结果。")
+                    return fallback_action
+
             if best_score < 10:
                 print("[NewAgent] 得分过低，使用随机动作兜底。")
                 return self._random_action()
@@ -510,6 +538,10 @@ class NewAgent(BasicAgent):
             self.my_target_type = 'solid'
         elif any(tid in self.STRIPE_IDS for tid in target_ids):
             self.my_target_type = 'stripe'
+
+    def _shot_alarm_handler(self, signum, frame):
+        """信号处理，达到单杆时间限制时抛出 TimeoutError。"""
+        raise TimeoutError("单杆搜索超时")
     
     def _evaluate_action(self, V0, phi, theta, a, b, balls, table, last_state_snapshot, player_targets):
         """带噪声 Monte Carlo 的动作评估"""
@@ -521,6 +553,9 @@ class NewAgent(BasicAgent):
             shot = pt.System(table=sim_table, balls=sim_balls, cue=cue)
             
             noisy_params = self._sample_noisy_params(V0, phi, theta, a, b)
+            if self._is_degenerate_params(noisy_params):
+                # Skip samples that would trigger unstable root solving.
+                return -500.0
             shot.cue.set_state(**noisy_params)
             try:
                 pt.simulate(shot, inplace=True)
@@ -542,8 +577,15 @@ class NewAgent(BasicAgent):
             cue_edge_bonus = self._cue_edge_bonus(shot, table)
             scratch_penalty = self._white_ball_penalty(shot, pocketed)
             black_penalty = self._illegal_black_penalty(pocketed, player_targets)
-            scores.append(base_score + strategic_bonus + rail_bonus + cue_edge_bonus + scratch_penalty + black_penalty)
+            candidate_score = (
+                base_score + strategic_bonus + rail_bonus + cue_edge_bonus + scratch_penalty + black_penalty
+            )
+            if not np.isfinite(candidate_score):
+                continue
+            scores.append(candidate_score)
         
+        if not scores:
+            return -500.0
         return float(np.mean(scores))
     
     def _sample_noisy_params(self, V0, phi, theta, a, b):
@@ -561,6 +603,20 @@ class NewAgent(BasicAgent):
         noisy['a'] = float(np.clip(noisy['a'], *self.pbounds['a']))
         noisy['b'] = float(np.clip(noisy['b'], *self.pbounds['b']))
         return noisy
+
+    def _is_degenerate_params(self, params):
+        """快速判断动作是否会造成数值退化/卡住。"""
+        theta = params['theta']
+        V0 = params['V0']
+        # 几乎平行于库边的高能量平射常触发 divide-by-zero
+        if theta < 1.0 and V0 > 7.0:
+            return True
+        if theta < 0.5 and V0 > 6.5:
+            return True
+        # 过于垂直的高能量也容易打回自己，影响 root solver
+        if theta > 88.0 and V0 > 6.5:
+            return True
+        return False
     
     def _strategic_bonus(self, shot, table, player_targets):
         """根据局面优劣增加额外奖励"""
@@ -763,6 +819,34 @@ class NewAgent(BasicAgent):
                 best_score = score
                 best_action = action
         return best_action, best_score
+
+    def _prepare_fallback_action(self, *, safe_action, safe_validation, balls, table,
+                                 player_targets, last_state_snapshot):
+        """在超时或低分时返回可用安全动作"""
+        if safe_action is not None and safe_validation is not None:
+            safe_ok = safe_validation[0] and not self._action_is_dangerous(
+                safe_validation[1], player_targets
+            )
+            if safe_ok:
+                return safe_action
+        heuristic_action = self._heuristic_safety_action(
+            balls=balls,
+            table=table,
+            player_targets=player_targets,
+            last_state_snapshot=last_state_snapshot
+        )
+        return heuristic_action
+
+    def _heuristic_safety_action(self, *, balls, table, player_targets, last_state_snapshot):
+        """快速生成保守候选并验证，避免长时间搜索"""
+        candidates = self._plan_safety_shot(balls, table)
+        for action in candidates:
+            valid, info = self._simulate_action_outcome(
+                action, balls, table, player_targets, last_state_snapshot
+            )
+            if valid and not self._action_is_dangerous(info, player_targets):
+                return action
+        return None
 
     def _fallback_safe_action(self, *, safe_action, safe_validation, balls, table,
                               player_targets, last_state_snapshot, scorer):
