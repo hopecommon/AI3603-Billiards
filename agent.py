@@ -456,6 +456,7 @@ class NewAgent(BasicAgent):
                     print("[NewAgent] 安全球候选验证失败，继续尝试进攻。")
 
             fallback_needed = timed_out or best_score < self.fallback_score_threshold
+            fallback_action = None
             if fallback_needed:
                 fallback_action = self._prepare_fallback_action(
                     safe_action=safe_action,
