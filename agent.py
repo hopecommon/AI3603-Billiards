@@ -324,46 +324,57 @@ class BasicAgent(Agent):
             return self._random_action()
 
 class NewAgent(BasicAgent):
-    """增强版 Agent：噪声鲁棒 + 局面控制"""
+    """增强版 Agent：Ghost Ball 几何瞄准 + CMA-ES 局部优化 + 噪声鲁棒"""
     
     SOLID_IDS = tuple(str(i) for i in range(1, 8))
     STRIPE_IDS = tuple(str(i) for i in range(9, 16))
+    BALL_RADIUS = 0.028575  # 标准台球半径 (米)
     
     def __init__(self):
         super().__init__()
         # 搜索与评估配置
-        self.INITIAL_SEARCH = 14
-        self.OPT_SEARCH = 8
-        self.robust_samples = 4
+        self.INITIAL_SEARCH = 18
+        self.OPT_SEARCH = 12
+        self.robust_samples = 6  # 增加采样次数提高鲁棒性
         self.enable_noise = False  # 使用自定义噪声采样
         
-        # 策略超参数
-        self.cue_next_ball_radius = 1.4
-        self.cue_next_ball_weight = 22.0
-        self.enemy_threat_radius = 1.0
-        self.enemy_distance_weight = 18.0
-        self.eight_guard_radius = 0.13
-        self.eight_guard_weight = 45.0
-        self.safety_trigger_score = 30.0
-        self.safety_prefer_margin = 8.0
-        self.safe_speed_bounds = (2.4, 3.2)
-        self.no_rail_penalty = 80.0
-        self.white_scratch_penalty = 220.0
-        self.illegal_black_penalty = 300.0
-        self.cue_edge_margin = 0.18
-        self.cue_edge_weight = 20.0
+        # CMA-ES 配置
+        self.use_cma_es = True
+        self.cma_population_size = 12
+        self.cma_generations = 8
+        self.cma_sigma = 0.3  # 初始步长
+        
+        # 策略超参数 - 调优后的权重
+        self.cue_next_ball_radius = 1.2
+        self.cue_next_ball_weight = 30.0  # 增加走位权重
+        self.enemy_threat_radius = 0.8
+        self.enemy_distance_weight = 15.0
+        self.eight_guard_radius = 0.15
+        self.eight_guard_weight = 50.0
+        self.safety_trigger_score = 25.0  # 降低阈值，更早考虑防守
+        self.safety_prefer_margin = 10.0
+        self.safe_speed_bounds = (1.8, 2.8)  # 降低安全球速度
+        self.no_rail_penalty = 100.0
+        self.white_scratch_penalty = 250.0
+        self.illegal_black_penalty = 350.0
+        self.cue_edge_margin = 0.15
+        self.cue_edge_weight = 15.0
         self.shot_timeout = 5 * 60
-        self.fallback_score_threshold = 30.0
-        self.attack_success_weight = 70.0
-        self.attack_cue_bonus_weight = 20.0
+        self.fallback_score_threshold = 25.0
+        self.attack_success_weight = 80.0
+        self.attack_cue_bonus_weight = 25.0
+        
+        # 进球概率阈值
+        self.min_pocket_probability = 0.4  # 低于此概率考虑防守
+        self.high_confidence_threshold = 0.7  # 高于此概率优先进攻
         
         # 记录自己是实心还是条纹，方便推断对手
         self.my_target_type = None  # 'solid' / 'stripe'
         
-        print("NewAgent (robust + strategic) 已初始化。")
+        print("NewAgent (Ghost Ball + CMA-ES + robust) 已初始化。")
     
     def decision(self, balls=None, my_targets=None, table=None):
-        """噪声鲁棒 + 局面控制的决策方法"""
+        """Ghost Ball 几何瞄准 + CMA-ES 局部优化 + 噪声鲁棒的决策方法"""
         if balls is None or table is None:
             print("[NewAgent] 缺少关键观测，使用随机动作。")
             return self._random_action()
@@ -386,66 +397,120 @@ class NewAgent(BasicAgent):
                 )
             
             print(f"[NewAgent] 搜索击球方案 (targets={prepared_targets}) ...")
-            seed = np.random.randint(1e6)
-            optimizer = self._create_optimizer(reward_fn_wrapper, seed)
-            timed_out = False
-            prev_handler = signal.getsignal(signal.SIGALRM)
-            try:
-                signal.signal(signal.SIGALRM, self._shot_alarm_handler)
-                signal.alarm(self.shot_timeout)
-                optimizer.maximize(
-                    init_points=self.INITIAL_SEARCH,
-                    n_iter=self.OPT_SEARCH
+            
+            # Step 1: 使用 Ghost Ball 几何方法生成高质量初始种子
+            ghost_ball_candidates = self._generate_ghost_ball_candidates(
+                balls, table, prepared_targets
+            )
+            print(f"[NewAgent] Ghost Ball 生成了 {len(ghost_ball_candidates)} 个候选动作")
+            
+            # Step 2: 评估所有候选并选出最佳
+            best_action = None
+            best_score = -500
+            
+            # 评估 Ghost Ball 候选
+            for candidate in ghost_ball_candidates:
+                if self._is_degenerate_params(candidate):
+                    continue
+                score = reward_fn_wrapper(**candidate)
+                if score > best_score:
+                    best_score = score
+                    best_action = candidate
+            
+            # Step 3: 使用 CMA-ES 对最佳候选进行局部优化
+            if best_action is not None and self.use_cma_es and best_score > -100:
+                optimized_action, optimized_score = self._cma_es_optimize(
+                    initial_action=best_action,
+                    reward_fn=reward_fn_wrapper,
+                    balls=balls,
+                    table=table
                 )
-            except TimeoutError:
-                timed_out = True
-                print(f"[NewAgent] 由于耗时超过{self.shot_timeout}s，提前终止搜索。")
-            finally:
-                signal.alarm(0)
-                signal.signal(signal.SIGALRM, prev_handler)
+                if optimized_score > best_score:
+                    best_action = optimized_action
+                    best_score = optimized_score
+                    print(f"[NewAgent] CMA-ES 优化后得分提升至 {best_score:.2f}")
+            
+            # Step 4: 如果 Ghost Ball + CMA-ES 效果不好，回退到贝叶斯优化
+            if best_score < self.fallback_score_threshold:
+                print("[NewAgent] Ghost Ball 方案得分较低，尝试贝叶斯优化...")
+                seed = np.random.randint(1e6)
+                optimizer = self._create_optimizer(reward_fn_wrapper, seed)
+                timed_out = False
+                prev_handler = signal.getsignal(signal.SIGALRM)
+                try:
+                    signal.signal(signal.SIGALRM, self._shot_alarm_handler)
+                    signal.alarm(self.shot_timeout)
+                    optimizer.maximize(
+                        init_points=self.INITIAL_SEARCH,
+                        n_iter=self.OPT_SEARCH
+                    )
+                except TimeoutError:
+                    timed_out = True
+                    print(f"[NewAgent] 由于耗时超过{self.shot_timeout}s，提前终止搜索。")
+                finally:
+                    signal.alarm(0)
+                    signal.signal(signal.SIGALRM, prev_handler)
 
-            best_result = optimizer.max
-            best_score = best_result['target']
-            best_params = best_result['params']
-            if best_score is None or np.isnan(best_score):
+                bayes_result = optimizer.max
+                bayes_score = bayes_result['target']
+                bayes_params = bayes_result['params']
+                if bayes_score is not None and not np.isnan(bayes_score) and bayes_score > best_score:
+                    best_score = bayes_score
+                    best_action = {
+                        'V0': float(bayes_params['V0']),
+                        'phi': float(bayes_params['phi']),
+                        'theta': float(bayes_params['theta']),
+                        'a': float(bayes_params['a']),
+                        'b': float(bayes_params['b'])
+                    }
+                    print(f"[NewAgent] 贝叶斯优化得分 {best_score:.2f}")
+            
+            if best_action is None or best_score < -400:
                 print("[NewAgent] 搜索失败，返回随机动作。")
                 return self._random_action()
             
-            action = {
-                'V0': float(best_params['V0']),
-                'phi': float(best_params['phi']),
-                'theta': float(best_params['theta']),
-                'a': float(best_params['a']),
-                'b': float(best_params['b'])
-            }
             print(f"[NewAgent] 最佳动作得分 {best_score:.2f}: "
-                  f"V0={action['V0']:.2f}, phi={action['phi']:.2f}, "
-                  f"θ={action['theta']:.2f}, a={action['a']:.3f}, b={action['b']:.3f}")
+                  f"V0={best_action['V0']:.2f}, phi={best_action['phi']:.2f}, "
+                  f"θ={best_action['theta']:.2f}, a={best_action['a']:.3f}, b={best_action['b']:.3f}")
             
-            # 评估安全球候选，必要时切换
+            # Step 5: 评估进球概率，决定是否防守
+            pocket_probability = self._estimate_pocket_probability(
+                best_action, balls, table, prepared_targets, last_state_snapshot
+            )
+            print(f"[NewAgent] 预估进球概率: {pocket_probability:.1%}")
+            
+            # Step 6: 评估安全球候选
             allow_safety = self._allow_safety_play(prepared_targets)
             safe_action = None
             safe_score = -500
-            if allow_safety:
+            if allow_safety or pocket_probability < self.min_pocket_probability:
                 safety_candidates = self._plan_safety_shot(balls, table)
                 safe_action, safe_score = self._select_best_candidate(
                     safety_candidates, reward_fn_wrapper
                 )
                 if safe_action is not None:
                     print(f"[NewAgent] 安全球候选得分 {safe_score:.2f}")
+            
             safe_validation = None
             if safe_action is not None:
                 safe_validation = self._simulate_action_outcome(
                     safe_action, balls, table, prepared_targets, last_state_snapshot
                 )
             
+            # Step 7: 决策：进攻 vs 防守
             if safe_action is not None:
+                # 进球概率低时优先防守
+                prefer_safe_low_prob = (
+                    pocket_probability < self.min_pocket_probability
+                    and safe_score > -50
+                )
                 prefer_safe = (
                     best_score < self.safety_trigger_score
                     and safe_score >= best_score + self.safety_prefer_margin
                 )
                 force_safe = safe_score >= best_score + self.safety_prefer_margin * 2.0
-                if prefer_safe or force_safe:
+                
+                if prefer_safe_low_prob or prefer_safe or force_safe:
                     safe_ok = safe_validation is not None and safe_validation[0]
                     safe_danger = safe_validation and self._action_is_dangerous(
                         safe_validation[1], prepared_targets
@@ -455,37 +520,13 @@ class NewAgent(BasicAgent):
                         return safe_action
                     print("[NewAgent] 安全球候选验证失败，继续尝试进攻。")
 
-            fallback_needed = timed_out or best_score < self.fallback_score_threshold
-            fallback_action = None
-            if fallback_needed:
-                fallback_action = self._prepare_fallback_action(
-                    safe_action=safe_action,
-                    safe_validation=safe_validation,
-                    balls=balls,
-                    table=table,
-                    player_targets=prepared_targets,
-                    last_state_snapshot=last_state_snapshot
-                )
-            if fallback_action is not None:
-                print("[NewAgent] 使用启发式保守策略替代原始搜索结果。")
-                return fallback_action
-
-            attack_action, attack_score = self._hierarchical_attack_search(
-                balls=balls,
-                table=table,
-                player_targets=prepared_targets,
-                last_state_snapshot=last_state_snapshot,
-                current_score=best_score
-            )
-            if attack_action is not None and attack_score > best_score + 5:
-                print("[NewAgent] 启发式进攻获得更高评分，采用该方案。")
-                return attack_action
-
+            # Step 8: 最终验证
             if best_score < 10:
                 print("[NewAgent] 得分过低，使用随机动作兜底。")
                 return self._random_action()
+            
             action_ok, action_info = self._simulate_action_outcome(
-                action, balls, table, prepared_targets, last_state_snapshot
+                best_action, balls, table, prepared_targets, last_state_snapshot
             )
             action_danger = action_info if action_info else {}
             if (not action_ok) or self._action_is_dangerous(action_danger, prepared_targets):
@@ -512,7 +553,8 @@ class NewAgent(BasicAgent):
                     return fallback
                 print("[NewAgent] 无可行安全球，使用随机动作兜底。")
                 return self._random_action()
-            return action
+            
+            return best_action
         
         except Exception as exc:
             print(f"[NewAgent] 决策错误，改用随机动作：{exc}")
@@ -552,6 +594,268 @@ class NewAgent(BasicAgent):
             self.my_target_type = 'solid'
         elif any(tid in self.STRIPE_IDS for tid in target_ids):
             self.my_target_type = 'stripe'
+
+    def _generate_ghost_ball_candidates(self, balls, table, player_targets):
+        """使用 Ghost Ball 方法生成高质量的击球候选
+        
+        Ghost Ball 原理：
+        - 计算目标球到袋口的方向向量
+        - 在目标球后方放置一个"幽灵球"（与目标球相切）
+        - 瞄准幽灵球中心即可将目标球打入袋口
+        """
+        candidates = []
+        cue_ball = balls.get('cue')
+        if cue_ball is None or cue_ball.state.s == 4:
+            return candidates
+        
+        cue_pos = np.array(cue_ball.state.rvw[0][:2], dtype=float)
+        pockets = list(table.pockets.values())
+        
+        for bid in player_targets:
+            ball = balls.get(bid)
+            if ball is None or ball.state.s == 4:
+                continue
+            
+            ball_pos = np.array(ball.state.rvw[0][:2], dtype=float)
+            
+            for pocket in pockets:
+                pocket_pos = np.array(pocket.center[:2], dtype=float)
+                
+                # 计算目标球到袋口的方向
+                ball_to_pocket = pocket_pos - ball_pos
+                dist_to_pocket = np.linalg.norm(ball_to_pocket)
+                if dist_to_pocket < 1e-3:
+                    continue
+                
+                ball_to_pocket_unit = ball_to_pocket / dist_to_pocket
+                
+                # Ghost Ball 位置：在目标球后方，距离为两球直径
+                ghost_ball_pos = ball_pos - ball_to_pocket_unit * (2 * self.BALL_RADIUS)
+                
+                # 检查路径是否被阻挡
+                if self._is_path_blocked(cue_pos, ghost_ball_pos, balls, bid):
+                    continue
+                
+                # 检查目标球到袋口路径是否被阻挡
+                if self._is_path_blocked(ball_pos, pocket_pos, balls, bid):
+                    continue
+                
+                # 计算瞄准角度
+                cue_to_ghost = ghost_ball_pos - cue_pos
+                dist_to_ghost = np.linalg.norm(cue_to_ghost)
+                if dist_to_ghost < 1e-3:
+                    continue
+                
+                phi = math.degrees(math.atan2(cue_to_ghost[1], cue_to_ghost[0])) % 360
+                
+                # 根据距离计算合适的力度
+                # 短距离用小力，长距离用大力
+                base_speed = self._calculate_optimal_speed(dist_to_ghost, dist_to_pocket)
+                
+                # 生成多个力度和旋转的变体
+                speed_variants = [base_speed * 0.85, base_speed, base_speed * 1.15]
+                spin_variants = [
+                    (0.0, 0.0),      # 无旋转
+                    (0.0, -0.15),    # 低杆（拉杆）
+                    (0.0, 0.15),     # 高杆（跟进）
+                    (-0.1, 0.0),     # 左塞
+                    (0.1, 0.0),      # 右塞
+                ]
+                
+                for speed in speed_variants:
+                    for spin_a, spin_b in spin_variants:
+                        candidates.append({
+                            'V0': float(np.clip(speed, 0.5, 8.0)),
+                            'phi': float(phi),
+                            'theta': 2.0,  # 小仰角
+                            'a': float(spin_a),
+                            'b': float(spin_b)
+                        })
+        
+        # 添加一些直接瞄准目标球的候选（用于近距离球）
+        for bid in player_targets:
+            ball = balls.get(bid)
+            if ball is None or ball.state.s == 4:
+                continue
+            
+            ball_pos = np.array(ball.state.rvw[0][:2], dtype=float)
+            cue_to_ball = ball_pos - cue_pos
+            dist = np.linalg.norm(cue_to_ball)
+            
+            if dist < 0.3:  # 近距离球
+                phi = math.degrees(math.atan2(cue_to_ball[1], cue_to_ball[0])) % 360
+                for speed in [1.5, 2.0, 2.5]:
+                    candidates.append({
+                        'V0': float(speed),
+                        'phi': float(phi),
+                        'theta': 1.0,
+                        'a': 0.0,
+                        'b': 0.0
+                    })
+        
+        return candidates
+    
+    def _is_path_blocked(self, start_pos, end_pos, balls, exclude_ball_id):
+        """检查两点之间的路径是否被其他球阻挡"""
+        direction = end_pos - start_pos
+        dist = np.linalg.norm(direction)
+        if dist < 1e-6:
+            return False
+        
+        direction_unit = direction / dist
+        
+        for bid, ball in balls.items():
+            if bid == 'cue' or bid == exclude_ball_id:
+                continue
+            if ball.state.s == 4:  # 已进袋
+                continue
+            
+            ball_pos = np.array(ball.state.rvw[0][:2], dtype=float)
+            
+            # 计算球心到路径的距离
+            to_ball = ball_pos - start_pos
+            proj_length = np.dot(to_ball, direction_unit)
+            
+            if proj_length < 0 or proj_length > dist:
+                continue
+            
+            closest_point = start_pos + direction_unit * proj_length
+            dist_to_path = np.linalg.norm(ball_pos - closest_point)
+            
+            # 如果距离小于两球直径，则路径被阻挡
+            if dist_to_path < 2 * self.BALL_RADIUS + 0.005:
+                return True
+        
+        return False
+    
+    def _calculate_optimal_speed(self, dist_to_target, dist_to_pocket):
+        """根据距离计算最优击球速度"""
+        total_dist = dist_to_target + dist_to_pocket
+        
+        # 基础速度公式：考虑摩擦损耗
+        # 短距离：1.5-2.5 m/s
+        # 中距离：2.5-4.0 m/s
+        # 长距离：4.0-6.0 m/s
+        if total_dist < 0.5:
+            speed = 1.8 + total_dist * 1.5
+        elif total_dist < 1.0:
+            speed = 2.5 + (total_dist - 0.5) * 2.0
+        elif total_dist < 1.5:
+            speed = 3.5 + (total_dist - 1.0) * 2.0
+        else:
+            speed = 4.5 + (total_dist - 1.5) * 1.5
+        
+        return float(np.clip(speed, 1.5, 6.5))
+    
+    def _cma_es_optimize(self, initial_action, reward_fn, balls, table):
+        """使用 CMA-ES 对初始动作进行局部优化"""
+        try:
+            import cma
+        except ImportError:
+            # 如果没有 cma 库，使用简单的局部搜索
+            return self._simple_local_search(initial_action, reward_fn)
+        
+        # 初始点
+        x0 = [
+            initial_action['V0'],
+            initial_action['phi'],
+            initial_action['theta'],
+            initial_action['a'],
+            initial_action['b']
+        ]
+        
+        # 搜索范围（局部优化，范围较小）
+        bounds = [
+            [max(0.5, x0[0] - 1.5), min(8.0, x0[0] + 1.5)],  # V0
+            [x0[1] - 5.0, x0[1] + 5.0],  # phi (允许 ±5 度)
+            [max(0, x0[2] - 3.0), min(90, x0[2] + 3.0)],  # theta
+            [max(-0.5, x0[3] - 0.2), min(0.5, x0[3] + 0.2)],  # a
+            [max(-0.5, x0[4] - 0.2), min(0.5, x0[4] + 0.2)],  # b
+        ]
+        
+        # CMA-ES 优化（最大化 reward，所以取负）
+        def neg_reward(x):
+            V0, phi, theta, a, b = x
+            # 处理 phi 的周期性
+            phi = phi % 360
+            params = {'V0': V0, 'phi': phi, 'theta': theta, 'a': a, 'b': b}
+            if self._is_degenerate_params(params):
+                return 500  # 惩罚退化参数
+            return -reward_fn(V0, phi, theta, a, b)
+        
+        try:
+            es = cma.CMAEvolutionStrategy(
+                x0,
+                self.cma_sigma,
+                {
+                    'bounds': [
+                        [b[0] for b in bounds],
+                        [b[1] for b in bounds]
+                    ],
+                    'popsize': self.cma_population_size,
+                    'maxiter': self.cma_generations,
+                    'verbose': -9,  # 静默模式
+                    'seed': np.random.randint(1e6)
+                }
+            )
+            
+            es.optimize(neg_reward)
+            best_x = es.result.xbest
+            best_score = -es.result.fbest
+            
+            best_action = {
+                'V0': float(np.clip(best_x[0], 0.5, 8.0)),
+                'phi': float(best_x[1] % 360),
+                'theta': float(np.clip(best_x[2], 0, 90)),
+                'a': float(np.clip(best_x[3], -0.5, 0.5)),
+                'b': float(np.clip(best_x[4], -0.5, 0.5))
+            }
+            
+            return best_action, best_score
+            
+        except Exception as e:
+            print(f"[NewAgent] CMA-ES 优化失败: {e}")
+            return initial_action, reward_fn(**initial_action)
+    
+    def _simple_local_search(self, initial_action, reward_fn):
+        """简单的局部搜索（当 CMA-ES 不可用时）"""
+        best_action = initial_action.copy()
+        best_score = reward_fn(**initial_action)
+        
+        # 在初始点附近进行网格搜索
+        for dV0 in [-0.5, 0, 0.5]:
+            for dphi in [-2, -1, 0, 1, 2]:
+                for da in [-0.1, 0, 0.1]:
+                    for db in [-0.1, 0, 0.1]:
+                        candidate = {
+                            'V0': float(np.clip(initial_action['V0'] + dV0, 0.5, 8.0)),
+                            'phi': float((initial_action['phi'] + dphi) % 360),
+                            'theta': initial_action['theta'],
+                            'a': float(np.clip(initial_action['a'] + da, -0.5, 0.5)),
+                            'b': float(np.clip(initial_action['b'] + db, -0.5, 0.5))
+                        }
+                        if self._is_degenerate_params(candidate):
+                            continue
+                        score = reward_fn(**candidate)
+                        if score > best_score:
+                            best_score = score
+                            best_action = candidate
+        
+        return best_action, best_score
+    
+    def _estimate_pocket_probability(self, action, balls, table, player_targets, last_state_snapshot, trials=8):
+        """估计动作的进球概率"""
+        successes = 0
+        for _ in range(trials):
+            noisy = self._sample_noisy_params(
+                action['V0'], action['phi'], action['theta'], action['a'], action['b']
+            )
+            valid, info = self._simulate_action_outcome(
+                noisy, balls, table, player_targets, last_state_snapshot
+            )
+            if valid and info.get('ME_INTO_POCKET'):
+                successes += 1
+        return successes / trials if trials > 0 else 0.0
 
     def _shot_alarm_handler(self, signum, frame):
         """信号处理，达到单杆时间限制时抛出 TimeoutError。"""
@@ -634,11 +938,17 @@ class NewAgent(BasicAgent):
         return False
     
     def _strategic_bonus(self, shot, table, player_targets):
-        """根据局面优劣增加额外奖励"""
-        cue_pos = np.array(shot.balls['cue'].state.rvw[0][:2], dtype=float)
+        """根据局面优劣增加额外奖励 - 增强版走位评估"""
+        cue_ball = shot.balls.get('cue')
+        if cue_ball is None or cue_ball.state.s == 4:
+            return -200.0  # 白球落袋
+        
+        cue_pos = np.array(cue_ball.state.rvw[0][:2], dtype=float)
         bonus = 0.0
         
         remaining_targets = self._remaining_targets_after_shot(shot, player_targets)
+        
+        # 1. 白球与下一个目标球的距离奖励
         own_positions = [
             np.array(shot.balls[bid].state.rvw[0][:2], dtype=float)
             for bid in remaining_targets
@@ -646,8 +956,16 @@ class NewAgent(BasicAgent):
         ]
         if own_positions:
             min_dist = min(np.linalg.norm(cue_pos - pos) for pos in own_positions)
+            # 距离越近奖励越高
             bonus += max(0.0, self.cue_next_ball_radius - min_dist) * self.cue_next_ball_weight
+            
+            # 额外奖励：白球在理想击球位置（目标球与袋口连线的延长线上）
+            ideal_position_bonus = self._evaluate_ideal_position(
+                cue_pos, own_positions, table
+            )
+            bonus += ideal_position_bonus * 15.0
         
+        # 2. 远离对手球的奖励
         enemy_positions = [
             np.array(shot.balls[bid].state.rvw[0][:2], dtype=float)
             for bid in self._enemy_target_ids()
@@ -657,6 +975,7 @@ class NewAgent(BasicAgent):
             near_enemy = min(np.linalg.norm(cue_pos - pos) for pos in enemy_positions)
             bonus -= max(0.0, self.enemy_threat_radius - near_enemy) * self.enemy_distance_weight
         
+        # 3. 保护黑8（避免意外打进）
         if not (len(player_targets) == 1 and player_targets[0] == '8'):
             black_ball = shot.balls.get('8')
             if black_ball is not None and black_ball.state.s != 4:
@@ -668,7 +987,73 @@ class NewAgent(BasicAgent):
                 if min_pocket_dist < self.eight_guard_radius:
                     bonus -= (self.eight_guard_radius - min_pocket_dist) * self.eight_guard_weight
         
+        # 4. 白球位置安全性（远离袋口）
+        pocket_safety = self._evaluate_cue_safety(cue_pos, table)
+        bonus += pocket_safety * 10.0
+        
+        # 5. 白球在台面中央区域的奖励（更多击球选择）
+        center_bonus = self._evaluate_center_position(cue_pos, table)
+        bonus += center_bonus * 8.0
+        
         return bonus
+    
+    def _evaluate_ideal_position(self, cue_pos, target_positions, table):
+        """评估白球是否在理想击球位置"""
+        if not target_positions:
+            return 0.0
+        
+        best_score = 0.0
+        pockets = list(table.pockets.values())
+        
+        for target_pos in target_positions:
+            for pocket in pockets:
+                pocket_pos = np.array(pocket.center[:2], dtype=float)
+                
+                # 理想位置：目标球与袋口连线的延长线上
+                target_to_pocket = pocket_pos - target_pos
+                dist = np.linalg.norm(target_to_pocket)
+                if dist < 1e-3:
+                    continue
+                
+                direction = target_to_pocket / dist
+                # 理想白球位置在目标球后方 0.3-0.6 米
+                ideal_pos = target_pos - direction * 0.4
+                
+                # 计算白球与理想位置的距离
+                dist_to_ideal = np.linalg.norm(cue_pos - ideal_pos)
+                score = max(0.0, 1.0 - dist_to_ideal / 0.5)
+                best_score = max(best_score, score)
+        
+        return best_score
+    
+    def _evaluate_cue_safety(self, cue_pos, table):
+        """评估白球位置的安全性（远离袋口）"""
+        min_pocket_dist = float('inf')
+        for pocket in table.pockets.values():
+            pocket_pos = np.array(pocket.center[:2], dtype=float)
+            dist = np.linalg.norm(cue_pos - pocket_pos)
+            min_pocket_dist = min(min_pocket_dist, dist)
+        
+        # 距离袋口越远越安全
+        if min_pocket_dist < 0.1:
+            return -1.0  # 危险
+        elif min_pocket_dist < 0.2:
+            return 0.0
+        else:
+            return min(1.0, (min_pocket_dist - 0.2) / 0.3)
+    
+    def _evaluate_center_position(self, cue_pos, table):
+        """评估白球是否在台面中央区域"""
+        center_x = table.l / 2
+        center_y = table.w / 2
+        
+        dist_from_center = np.sqrt(
+            (cue_pos[0] - center_x) ** 2 + (cue_pos[1] - center_y) ** 2
+        )
+        
+        # 距离中心越近越好
+        max_dist = np.sqrt(center_x ** 2 + center_y ** 2)
+        return max(0.0, 1.0 - dist_from_center / max_dist)
     
     def _pocketed_since_last(self, shot, last_state):
         """返回相对于上一杆新进袋的球"""
@@ -742,7 +1127,7 @@ class NewAgent(BasicAgent):
         return 0.0
     
     def _plan_safety_shot(self, balls, table):
-        """生成多个安全球候选（确保有明显的碰库或藏球倾向）"""
+        """生成多个安全球候选 - 增强版：更智能的防守策略"""
         cue_ball = balls.get('cue')
         if cue_ball is None:
             return []
@@ -750,56 +1135,162 @@ class NewAgent(BasicAgent):
         margin = 0.07
         clamp_x = np.clip(cue_pos[0], margin, table.l - margin)
         clamp_y = np.clip(cue_pos[1], margin, table.w - margin)
+        
+        candidates = []
+        base_speeds = np.linspace(self.safe_speed_bounds[0], self.safe_speed_bounds[1], num=4)
+        
+        # 策略1：将白球推向远端库边（增加对手难度）
+        far_corners = [
+            np.array([margin, margin]),  # 左下角
+            np.array([margin, table.w - margin]),  # 左上角
+            np.array([table.l - margin, margin]),  # 右下角
+            np.array([table.l - margin, table.w - margin])  # 右上角
+        ]
+        
+        for corner in far_corners:
+            direction = corner - cue_pos
+            dist = np.linalg.norm(direction)
+            if dist < 0.1:
+                continue
+            phi = math.degrees(math.atan2(direction[1], direction[0])) % 360
+            
+            # 根据距离调整力度
+            for speed_factor in [0.8, 1.0, 1.2]:
+                speed = min(dist * 1.5 * speed_factor, self.safe_speed_bounds[1])
+                speed = max(speed, self.safe_speed_bounds[0])
+                
+                for spin in [(0.0, -0.1), (-0.1, 0.0), (0.1, 0.0), (0.0, 0.0)]:
+                    candidates.append({
+                        'V0': float(speed),
+                        'phi': float(phi),
+                        'theta': 1.5,
+                        'a': float(spin[0]),
+                        'b': float(spin[1])
+                    })
+        
+        # 策略2：轻触己方球后藏到库边
+        nearest_own = self._nearest_own_ball(balls)
+        if nearest_own is not None:
+            own_vec = nearest_own - cue_pos
+            dist_to_own = np.linalg.norm(own_vec)
+            if dist_to_own > 0.05:
+                phi = math.degrees(math.atan2(own_vec[1], own_vec[0])) % 360
+                
+                # 轻触后拉杆
+                for speed in [1.2, 1.5, 1.8]:
+                    candidates.append({
+                        'V0': float(speed),
+                        'phi': float(phi),
+                        'theta': 1.0,
+                        'a': 0.0,
+                        'b': -0.2  # 低杆拉回
+                    })
+                    candidates.append({
+                        'V0': float(speed),
+                        'phi': float(phi),
+                        'theta': 1.0,
+                        'a': -0.15,
+                        'b': -0.15  # 左下塞
+                    })
+                    candidates.append({
+                        'V0': float(speed),
+                        'phi': float(phi),
+                        'theta': 1.0,
+                        'a': 0.15,
+                        'b': -0.15  # 右下塞
+                    })
+        
+        # 策略3：制造斯诺克（将白球藏到障碍球后面）
+        snooker_candidates = self._generate_snooker_candidates(balls, table, cue_pos)
+        candidates.extend(snooker_candidates)
+        
+        # 策略4：简单碰库（确保合法）
         cushion_targets = [
             np.array([margin, clamp_y]),
             np.array([table.l - margin, clamp_y]),
             np.array([clamp_x, margin]),
             np.array([clamp_x, table.w - margin])
         ]
-        two_bank_dirs = [
-            math.degrees(math.atan2(clamp_y - cue_pos[1], (table.l - margin) - cue_pos[0])),
-            math.degrees(math.atan2((table.w - margin) - cue_pos[1], clamp_x - cue_pos[0])),
-            math.degrees(math.atan2(margin - cue_pos[1], margin - cue_pos[0])),
-            math.degrees(math.atan2((table.w - margin) - cue_pos[1], (table.l - margin) - cue_pos[0]))
-        ]
-        candidates = []
-        base_speeds = np.linspace(self.safe_speed_bounds[0], self.safe_speed_bounds[1], num=3)
-        spin_options = [(-0.18, -0.08), (0.18, 0.06), (0.0, -0.12)]
+        
         for target_point in cushion_targets:
             direction = target_point - cue_pos
             if np.linalg.norm(direction) < 1e-6:
                 continue
             phi = math.degrees(math.atan2(direction[1], direction[0])) % 360
             for speed in base_speeds:
-                for spin in spin_options:
-                    candidates.append({
-                        'V0': float(speed),
-                        'phi': float(phi),
-                        'theta': 2.0,
-                        'a': float(spin[0]),
-                        'b': float(spin[1])
-                    })
-        for phi in two_bank_dirs:
-            for speed in base_speeds:
                 candidates.append({
                     'V0': float(speed),
-                    'phi': float(phi % 360),
-                    'theta': 3.0,
-                    'a': 0.0,
-                    'b': -0.05
-                })
-        nearest_own = self._nearest_own_ball(balls)
-        if nearest_own is not None:
-            own_vec = nearest_own - cue_pos
-            if np.linalg.norm(own_vec) > 1e-3:
-                phi = math.degrees(math.atan2(own_vec[1], own_vec[0])) % 360
-                candidates.append({
-                    'V0': float(self.safe_speed_bounds[0]),
                     'phi': float(phi),
-                    'theta': 0.5,
-                    'a': -0.2,
-                    'b': -0.08
+                    'theta': 2.0,
+                    'a': 0.0,
+                    'b': 0.0
                 })
+        
+        return candidates
+    
+    def _generate_snooker_candidates(self, balls, table, cue_pos):
+        """生成斯诺克候选（将白球藏到障碍球后面）"""
+        candidates = []
+        
+        # 找到对手的球
+        enemy_ids = self._enemy_target_ids()
+        enemy_positions = [
+            np.array(balls[bid].state.rvw[0][:2], dtype=float)
+            for bid in enemy_ids
+            if bid in balls and balls[bid].state.s != 4
+        ]
+        
+        if not enemy_positions:
+            return candidates
+        
+        # 找到可以用来遮挡的球（己方球或其他球）
+        blocker_positions = []
+        for bid, ball in balls.items():
+            if bid == 'cue' or ball.state.s == 4:
+                continue
+            if bid not in enemy_ids:  # 己方球或黑8
+                blocker_positions.append(np.array(ball.state.rvw[0][:2], dtype=float))
+        
+        if not blocker_positions:
+            return candidates
+        
+        # 对于每个遮挡球，计算可以藏白球的位置
+        for blocker_pos in blocker_positions:
+            for enemy_pos in enemy_positions:
+                # 计算遮挡方向
+                blocker_to_enemy = enemy_pos - blocker_pos
+                dist = np.linalg.norm(blocker_to_enemy)
+                if dist < 0.1:
+                    continue
+                
+                direction = blocker_to_enemy / dist
+                
+                # 理想藏球位置：在遮挡球的另一侧
+                hide_pos = blocker_pos - direction * 0.15
+                
+                # 检查位置是否在台面内
+                if (hide_pos[0] < 0.1 or hide_pos[0] > table.l - 0.1 or
+                    hide_pos[1] < 0.1 or hide_pos[1] > table.w - 0.1):
+                    continue
+                
+                # 计算击球参数
+                cue_to_hide = hide_pos - cue_pos
+                dist_to_hide = np.linalg.norm(cue_to_hide)
+                if dist_to_hide < 0.1:
+                    continue
+                
+                phi = math.degrees(math.atan2(cue_to_hide[1], cue_to_hide[0])) % 360
+                speed = min(dist_to_hide * 2.0, 2.5)
+                speed = max(speed, 1.5)
+                
+                candidates.append({
+                    'V0': float(speed),
+                    'phi': float(phi),
+                    'theta': 1.5,
+                    'a': 0.0,
+                    'b': -0.1
+                })
+        
         return candidates
     
     def _nearest_own_ball(self, balls):
