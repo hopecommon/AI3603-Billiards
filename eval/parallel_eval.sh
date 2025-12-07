@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONCURRENCY="${CONCURRENCY:-5}"
+CONCURRENCY="${CONCURRENCY:-10}"
 GAMES="${GAMES:-4}"
 SEED_BASE="${SEED_BASE:-0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -91,7 +91,7 @@ if agg_events:
     for event, counts in agg_events.items():
         agents = " ".join(f"{agent}:{cnt}" for agent, cnt in counts.items())
         print(f"  * {event}: {agents}")
-PY "$REPO_ROOT" "${new_logs[@]}"
+PY
 
 if $fail; then
   exit 1
