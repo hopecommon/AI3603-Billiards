@@ -833,6 +833,12 @@ class NewAgent(BasicAgent):
             if score > best_score:
                 best_score = score
                 best_action = action
+        if best_action is not None:
+            valid_sim, sim_info = self._simulate_action_outcome(
+                best_action, balls, table, player_targets, last_state_snapshot
+            )
+            if valid_sim and sim_info.get('NO_POCKET_NO_RAIL'):
+                return None, current_score
         return best_action, best_score
 
     def _prepare_fallback_action(self, *, safe_action, safe_validation, balls, table,
