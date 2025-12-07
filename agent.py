@@ -378,7 +378,10 @@ class NewAgent(BasicAgent):
         if balls is None or table is None:
             print("[NewAgent] 缺少关键观测，使用随机动作。")
             return self._random_action()
-        
+
+        prev_handler = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, self._shot_alarm_handler)
+        signal.alarm(self.shot_timeout)
         try:
             prepared_targets = self._prepare_targets(balls, my_targets)
             last_state_snapshot = {bid: copy.deepcopy(ball) for bid, ball in balls.items()}
@@ -435,21 +438,10 @@ class NewAgent(BasicAgent):
                 print("[NewAgent] Ghost Ball 方案得分较低，尝试贝叶斯优化...")
                 seed = np.random.randint(1e6)
                 optimizer = self._create_optimizer(reward_fn_wrapper, seed)
-                timed_out = False
-                prev_handler = signal.getsignal(signal.SIGALRM)
-                try:
-                    signal.signal(signal.SIGALRM, self._shot_alarm_handler)
-                    signal.alarm(self.shot_timeout)
-                    optimizer.maximize(
-                        init_points=self.INITIAL_SEARCH,
-                        n_iter=self.OPT_SEARCH
-                    )
-                except TimeoutError:
-                    timed_out = True
-                    print(f"[NewAgent] 由于耗时超过{self.shot_timeout}s，提前终止搜索。")
-                finally:
-                    signal.alarm(0)
-                    signal.signal(signal.SIGALRM, prev_handler)
+                optimizer.maximize(
+                    init_points=self.INITIAL_SEARCH,
+                    n_iter=self.OPT_SEARCH
+                )
 
                 bayes_result = optimizer.max
                 bayes_score = bayes_result['target']
@@ -556,11 +548,27 @@ class NewAgent(BasicAgent):
             
             return best_action
         
+        except TimeoutError:
+            print(f"[NewAgent] 由于耗时超过{self.shot_timeout}s，超时终止当前杆，改用保守策略。")
+            fallback_action = self._prepare_fallback_action(
+                safe_action=safe_action if 'safe_action' in locals() else None,
+                safe_validation=safe_validation if 'safe_validation' in locals() else None,
+                balls=balls,
+                table=table,
+                player_targets=prepared_targets if 'prepared_targets' in locals() else self._prepare_targets(balls, my_targets),
+                last_state_snapshot=last_state_snapshot if 'last_state_snapshot' in locals() else {bid: copy.deepcopy(ball) for bid, ball in balls.items()}
+            )
+            if fallback_action is not None:
+                return fallback_action
+            return self._random_action()
         except Exception as exc:
             print(f"[NewAgent] 决策错误，改用随机动作：{exc}")
             import traceback
             traceback.print_exc()
             return self._random_action()
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, prev_handler)
     
     def _prepare_targets(self, balls, my_targets):
         """规范化目标球列表，并更新己方球型"""
