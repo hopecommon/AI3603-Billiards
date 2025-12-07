@@ -354,6 +354,8 @@ class NewAgent(BasicAgent):
         self.cue_edge_weight = 20.0
         self.shot_timeout = 5 * 60
         self.fallback_score_threshold = 30.0
+        self.attack_success_weight = 70.0
+        self.attack_cue_bonus_weight = 20.0
         
         # 记录自己是实心还是条纹，方便推断对手
         self.my_target_type = None  # 'solid' / 'stripe'
@@ -463,9 +465,20 @@ class NewAgent(BasicAgent):
                     player_targets=prepared_targets,
                     last_state_snapshot=last_state_snapshot
                 )
-                if fallback_action is not None:
-                    print("[NewAgent] 使用启发式保守策略替代原始搜索结果。")
-                    return fallback_action
+            if fallback_action is not None:
+                print("[NewAgent] 使用启发式保守策略替代原始搜索结果。")
+                return fallback_action
+
+            attack_action, attack_score = self._hierarchical_attack_search(
+                balls=balls,
+                table=table,
+                player_targets=prepared_targets,
+                last_state_snapshot=last_state_snapshot,
+                current_score=best_score
+            )
+            if attack_action is not None and attack_score > best_score + 5:
+                print("[NewAgent] 启发式进攻获得更高评分，采用该方案。")
+                return attack_action
 
             if best_score < 10:
                 print("[NewAgent] 得分过低，使用随机动作兜底。")
@@ -543,10 +556,11 @@ class NewAgent(BasicAgent):
         """信号处理，达到单杆时间限制时抛出 TimeoutError。"""
         raise TimeoutError("单杆搜索超时")
     
-    def _evaluate_action(self, V0, phi, theta, a, b, balls, table, last_state_snapshot, player_targets):
+    def _evaluate_action(self, V0, phi, theta, a, b, balls, table, last_state_snapshot, player_targets, robust_samples=None):
         """带噪声 Monte Carlo 的动作评估"""
+        samples = int(robust_samples) if robust_samples is not None else self.robust_samples
         scores = []
-        for _ in range(self.robust_samples):
+        for _ in range(samples):
             sim_balls = {bid: copy.deepcopy(ball) for bid, ball in balls.items()}
             sim_table = copy.deepcopy(table)
             cue = pt.Cue(cue_ball_id="cue")
@@ -847,6 +861,104 @@ class NewAgent(BasicAgent):
             if valid and not self._action_is_dangerous(info, player_targets):
                 return action
         return None
+
+    def _hierarchical_attack_search(self, *, balls, table, player_targets,
+                                    last_state_snapshot, current_score):
+        """生成启发式进攻候选并在本地优化层面选出最优解。"""
+        candidates = self._generate_attack_candidates(balls, table, player_targets)
+        best_action = None
+        best_score = current_score
+        for action in candidates:
+            if self._is_degenerate_params(action):
+                continue
+            robust_score = self._evaluate_action(
+                action['V0'], action['phi'], action['theta'], action['a'], action['b'],
+                balls, table, last_state_snapshot, player_targets, robust_samples=2
+            )
+            if robust_score < -400:
+                continue
+            success_rate = self._estimate_success_rate(
+                action, balls, table, player_targets, last_state_snapshot, trials=4
+            )
+            cue_bonus = self._cue_control_bonus(balls, player_targets)
+            combined = robust_score + success_rate * self.attack_success_weight + cue_bonus
+            if combined > best_score:
+                best_score = combined
+                best_action = action
+        return best_action, best_score
+
+    def _generate_attack_candidates(self, balls, table, player_targets, max_candidates=12):
+        """基于几何启发式（ghost-ball / pocket）生成进攻初始种子。"""
+        candidates = []
+        cue_ball = balls.get('cue')
+        if cue_ball is None:
+            return candidates
+        cue_pos = np.array(cue_ball.state.rvw[0][:2], dtype=float)
+        pockets = list(table.pockets.values())
+        for bid in player_targets:
+            ball = balls.get(bid)
+            if ball is None or ball.state.s == 4:
+                continue
+            ball_pos = np.array(ball.state.rvw[0][:2], dtype=float)
+            distance = np.linalg.norm(ball_pos - cue_pos)
+            speed = float(np.clip(distance * 0.6 + 1.8, 1.5, 6.0))
+            aim_angle = math.atan2(ball_pos[1] - cue_pos[1], ball_pos[0] - cue_pos[0])
+            for pocket in pockets:
+                pocket_pos = np.array(pocket.center[:2], dtype=float)
+                if np.linalg.norm(ball_pos - pocket_pos) < 1e-3:
+                    continue
+                pocket_angle = math.atan2(pocket_pos[1] - ball_pos[1], pocket_pos[0] - ball_pos[0])
+                adjusted = aim_angle + 0.25 * self._angle_diff(pocket_angle, aim_angle)
+                phi = math.degrees(adjusted) % 360
+                theta = float(np.clip(5.0 + np.random.uniform(-1.0, 1.0), 2.0, 8.0))
+                spin_a = 0.0
+                spin_b = 0.0
+                candidates.append({
+                    'V0': speed,
+                    'phi': phi,
+                    'theta': theta,
+                    'a': spin_a,
+                    'b': spin_b
+                })
+                if len(candidates) >= max_candidates:
+                    return candidates
+        return candidates
+
+    def _estimate_success_rate(self, action, balls, table, player_targets, last_state_snapshot, trials=4):
+        """Monte Carlo 估计动作的实战进球概率（带噪声）。"""
+        hits = 0
+        for _ in range(trials):
+            noisy = self._sample_noisy_params(
+                action['V0'], action['phi'], action['theta'], action['a'], action['b']
+            )
+            valid, info = self._simulate_action_outcome(
+                noisy, balls, table, player_targets, last_state_snapshot
+            )
+            if valid and info.get('ME_INTO_POCKET'):
+                hits += 1
+        return hits / trials if trials else 0.0
+
+    def _cue_control_bonus(self, balls, player_targets):
+        """根据白球与近期目标球的距离评估布局价值（距离越小越好）。"""
+        cue_ball = balls.get('cue')
+        if cue_ball is None or not player_targets:
+            return 0.0
+        cue_pos = np.array(cue_ball.state.rvw[0][:2], dtype=float)
+        targets = [
+            np.array(balls[bid].state.rvw[0][:2], dtype=float)
+            for bid in player_targets
+            if bid in balls and balls[bid].state.s != 4
+        ]
+        if not targets:
+            return 0.0
+        min_dist = min(np.linalg.norm(cue_pos - pos) for pos in targets)
+        reward = max(0.0, self.cue_next_ball_radius - min_dist)
+        return reward * self.attack_cue_bonus_weight
+
+    def _angle_diff(self, target, source):
+        """返回两个弧度角度的最小差值（-pi ~ pi）。"""
+        delta = target - source
+        return (delta + math.pi) % (2 * math.pi) - math.pi
 
     def _fallback_safe_action(self, *, safe_action, safe_validation, balls, table,
                               player_targets, last_state_snapshot, scorer):
