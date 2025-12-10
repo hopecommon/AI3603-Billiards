@@ -8,7 +8,7 @@ evaluate.py - Agent 评估脚本
 
 使用方式：
 1. 修改 agent_b 为你设计的待测试的 Agent， 与课程提供的BasicAgent对打
-2. 调整 n_games 设置对战局数（评分时设置为40局来计算胜率）
+2. 调整 n_games 设置对战局数（评分时设置为120局来计算胜率）
 3. 运行脚本查看结果
 """
 
@@ -22,17 +22,24 @@ from datetime import datetime
 import random
 import argparse
 
+# 导入必要的模块
+from utils import set_random_seed
 from poolenv import PoolEnv
-from agent import Agent, BasicAgent, NewAgent
+from agent import BasicAgent, NewAgent
+
+# 设置随机种子，enable=True 时使用固定种子，enable=False 时使用完全随机
+# 根据需求，我们在这里统一设置随机种子，确保 agent 双方的全局击球扰动使用相同的随机状态
+set_random_seed(enable=False, seed=42)
 
 parser = argparse.ArgumentParser(description="Evaluate BasicAgent vs NewAgent")
-parser.add_argument("--games", type=int, default=40, help="对战局数（默认40，与评分一致）")
+parser.add_argument("--games", type=int, default=120, help="对战局数（默认40，与评分一致）")
 parser.add_argument("--logdir", default="logs", help="日志目录（默认为 logs/，传空字符串即可禁用）")
 args = parser.parse_args()
 
 env = PoolEnv()
 results = {'AGENT_A_WIN': 0, 'AGENT_B_WIN': 0, 'SAME': 0}
 n_games = args.games
+
 
 agent_a = BasicAgent()
 agent_b = NewAgent()
@@ -62,16 +69,14 @@ for i in range(n_games):
     print()
     print(f"------- 第 {i} 局比赛开始 -------")
     env.reset(target_ball=target_ball_choice[i % 4])
-    player_a_agent = players[i % 2]
-    player_b_agent = players[(i + 1) % 2]
-    print(f"本局 Player A: {player_a_agent.__class__.__name__}, 目标球型: {target_ball_choice[i % 4]}")
+    player_class = players[i % 2].__class__.__name__
+    ball_type = target_ball_choice[i % 4]
+    print(f"本局 Player A: {player_class}, 目标球型: {ball_type}")
     if log_path:
-        log_write(f"[GAME {i}] PlayerA={player_a_agent.__class__.__name__}, targets={target_ball_choice[i % 4]}\n")
+        log_write(f"[GAME {i}] PlayerA={player_class}, targets={ball_type}\n")
     while True:
         player = env.get_curr_player()
-        acting_agent = player_a_agent if player == 'A' else player_b_agent
-        agent_label = acting_agent.__class__.__name__
-        print(f"[第{env.hit_count}次击球] player: {player} ({agent_label})")
+        print(f"[第{env.hit_count}次击球] player: {player}")
         if log_path:
             log_write(f"[SHOT {env.hit_count}] player={player} agent={agent_label}\n")
         obs = env.get_observation(player)
@@ -84,22 +89,15 @@ for i in range(n_games):
         done, info = env.get_done()
         if not done:
             log_notes = []
-            if step_info.get('FOUL_FIRST_HIT'):
-                msg = "本杆判罚：首次接触对方球或黑8，直接交换球权。"
-                print(msg)
-                log_notes.append(msg)
-            if step_info.get('NO_POCKET_NO_RAIL'):
-                msg = "本杆判罚：无进球且母球或目标球未碰库，直接交换球权。"
-                print(msg)
-                log_notes.append(msg)
-            if step_info.get('NO_HIT'):
-                msg = "本杆判罚：白球未接触任何球，直接交换球权。"
-                print(msg)
-                log_notes.append(msg)
-            if step_info.get('ME_INTO_POCKET'):
-                msg = f"我方球入袋：{step_info['ME_INTO_POCKET']}"
-                print(msg)
-                log_notes.append(msg)
+            # poolenv中已有打印，无需再输出
+            # if step_info.get('FOUL_FIRST_HIT'):
+            #     print("本杆判罚：首次接触对方球或黑8，直接交换球权。")
+            # if step_info.get('NO_POCKET_NO_RAIL'):
+            #     print("本杆判罚：无进球且母球或目标球未碰库，直接交换球权。")
+            # if step_info.get('NO_HIT'):
+            #     print("本杆判罚：白球未接触任何球，直接交换球权。")
+            # if step_info.get('ME_INTO_POCKET'):
+            #     print(f"我方球入袋：{step_info['ME_INTO_POCKET']}")
             if step_info.get('ENEMY_INTO_POCKET'):
                 msg = f"对方球入袋：{step_info['ENEMY_INTO_POCKET']}"
                 print(msg)
