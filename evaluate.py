@@ -69,14 +69,18 @@ for i in range(n_games):
     print()
     print(f"------- 第 {i} 局比赛开始 -------")
     env.reset(target_ball=target_ball_choice[i % 4])
+    player_a_agent = players[i % 2]
+    player_b_agent = players[(i + 1) % 2]
     player_class = players[i % 2].__class__.__name__
     ball_type = target_ball_choice[i % 4]
     print(f"本局 Player A: {player_class}, 目标球型: {ball_type}")
     if log_path:
-        log_write(f"[GAME {i}] PlayerA={player_class}, targets={ball_type}\n")
+        log_write(f"[GAME {i}] PlayerA={player_a_agent.__class__.__name__}, targets={target_ball_choice[i % 4]}\n")
     while True:
         player = env.get_curr_player()
-        print(f"[第{env.hit_count}次击球] player: {player}")
+        acting_agent = player_a_agent if player == 'A' else player_b_agent
+        agent_label = acting_agent.__class__.__name__
+        print(f"[第{env.hit_count}次击球] player: {player} ({agent_label})")
         if log_path:
             log_write(f"[SHOT {env.hit_count}] player={player} agent={agent_label}\n")
         obs = env.get_observation(player)
