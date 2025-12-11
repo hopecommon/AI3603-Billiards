@@ -21,15 +21,17 @@ import os
 from datetime import datetime
 import random
 import argparse
+import time
 
 # 导入必要的模块
 from utils import set_random_seed
 from poolenv import PoolEnv
-from agent import BasicAgent, NewAgent
+from agent import BasicAgent, NewAgent       
+from agent_optimized import OptimizedNewAgent  # 使用优化版
 
 # 设置随机种子，enable=True 时使用固定种子，enable=False 时使用完全随机
 # 根据需求，我们在这里统一设置随机种子，确保 agent 双方的全局击球扰动使用相同的随机状态
-set_random_seed(enable=False, seed=42)
+set_random_seed(enable=True, seed=42)
 
 parser = argparse.ArgumentParser(description="Evaluate BasicAgent vs NewAgent")
 parser.add_argument("--games", type=int, default=120, help="对战局数（默认40，与评分一致）")
@@ -39,10 +41,21 @@ args = parser.parse_args()
 env = PoolEnv()
 results = {'AGENT_A_WIN': 0, 'AGENT_B_WIN': 0, 'SAME': 0}
 n_games = args.games
+game_times = []  # 记录每局游戏时间
 
+# 失误统计
+foul_stats = {
+    'white_ball_pocketed': 0,
+    'illegal_eight_ball': 0,
+    'white_and_eight': 0,
+    'first_hit_foul': 0,
+    'no_rail_foul': 0,
+    'no_hit_foul': 0
+}
 
 agent_a = BasicAgent()
-agent_b = NewAgent()
+# agent_b = NewAgent()
+agent_b = OptimizedNewAgent()
 
 players = [agent_a, agent_b]  # 用于切换先后手
 target_ball_choice = ['solid', 'solid', 'stripe', 'stripe']  # 轮换球型
@@ -68,6 +81,7 @@ def log_write(line: str) -> None:
 for i in range(n_games): 
     print()
     print(f"------- 第 {i} 局比赛开始 -------")
+    game_start_time = time.time()  # 记录本局开始时间
     env.reset(target_ball=target_ball_choice[i % 4])
     player_a_agent = players[i % 2]
     player_b_agent = players[(i + 1) % 2]
@@ -91,6 +105,26 @@ for i in range(n_games):
         step_info = env.take_shot(action)
         
         done, info = env.get_done()
+        
+        # 统计失误（无论是否done）
+        if step_info.get('WHITE_BALL_INTO_POCKET'):
+            if step_info.get('BLACK_BALL_INTO_POCKET'):
+                foul_stats['white_and_eight'] += 1
+            else:
+                foul_stats['white_ball_pocketed'] += 1
+        elif step_info.get('BLACK_BALL_INTO_POCKET'):
+            # 检查是否合法打黑八（需要从环境获取信息）
+            # 简化：如果黑八进袋且游戏未结束或输了，则是非法
+            if done and info.get('winner') != player:
+                foul_stats['illegal_eight_ball'] += 1
+        
+        if step_info.get('FOUL_FIRST_HIT'):
+            foul_stats['first_hit_foul'] += 1
+        if step_info.get('NO_POCKET_NO_RAIL'):
+            foul_stats['no_rail_foul'] += 1
+        if step_info.get('NO_HIT'):
+            foul_stats['no_hit_foul'] += 1
+        
         if not done:
             log_notes = []
             # poolenv中已有打印，无需再输出
@@ -141,14 +175,54 @@ for i in range(n_games):
                 results[['AGENT_A_WIN', 'AGENT_B_WIN'][i % 2]] += 1
             else:
                 results[['AGENT_A_WIN', 'AGENT_B_WIN'][(i+1) % 2]] += 1
+            
+            # 记录本局游戏时间
+            game_end_time = time.time()
+            game_duration = game_end_time - game_start_time
+            game_times.append(game_duration)
+            print(f"本局耗时: {game_duration:.2f}秒")
+            
             if log_path:
-                log_write(f"[GAME {i} DONE] info={info}\n")
+                log_write(f"[GAME {i} DONE] info={info}, duration={game_duration:.2f}s\n")
             break
 
 # 计算分数：胜1分，负0分，平局0.5
 results['AGENT_A_SCORE'] = results['AGENT_A_WIN'] * 1 + results['SAME'] * 0.5
 results['AGENT_B_SCORE'] = results['AGENT_B_WIN'] * 1 + results['SAME'] * 0.5
 
+# 计算时间统计
+if game_times:
+    avg_game_time = sum(game_times) / len(game_times)
+    total_time = sum(game_times)
+    min_game_time = min(game_times)
+    max_game_time = max(game_times)
+    
+    print("\n========== 时间统计 ==========")
+    print(f"总耗时: {total_time:.2f}秒 ({total_time/60:.2f}分钟)")
+    print(f"平均每局: {avg_game_time:.2f}秒")
+    print(f"最快一局: {min_game_time:.2f}秒")
+    print(f"最慢一局: {max_game_time:.2f}秒")
+    print("=" * 30)
+
+# 失误统计
+print("\n========== 失误统计 ==========")
+print(f"白球进袋: {foul_stats['white_ball_pocketed']}次")
+print(f"非法黑八: {foul_stats['illegal_eight_ball']}次")
+print(f"白球+黑八: {foul_stats['white_and_eight']}次")
+print(f"首球犯规: {foul_stats['first_hit_foul']}次")
+print(f"无碰库犯规: {foul_stats['no_rail_foul']}次")
+print(f"未击中犯规: {foul_stats['no_hit_foul']}次")
+total_critical_fouls = (foul_stats['white_ball_pocketed'] + 
+                        foul_stats['illegal_eight_ball'] + 
+                        foul_stats['white_and_eight'])
+print(f"致命失误总计: {total_critical_fouls}次")
+if n_games > 0:
+    print(f"致命失误率: {total_critical_fouls/n_games*100:.1f}%")
+print("=" * 30)
+
 print("\n最终结果：", results)
 if log_path:
+    if game_times:
+        log_write(f"[TIME STATS] total={total_time:.2f}s, avg={avg_game_time:.2f}s, min={min_game_time:.2f}s, max={max_game_time:.2f}s\n")
+    log_write(f"[FOUL STATS] {foul_stats}\n")
     log_write(f"[RESULT] {results}\n")
