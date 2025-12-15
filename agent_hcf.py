@@ -53,19 +53,19 @@ class OptimizedNewAgent(Agent):
         # ============ 速度优化参数 ============
         
         # 1. 分层采样策略（最大瓶颈优化）
-        self.samples_quick_filter = 2      # 快速筛选：2次采样
-        self.samples_normal_eval = 3       # 正常评估：3次采样（从4→3）
-        self.samples_final_verify = 4      # 最终验证：4次采样（从6→4）
+        self.samples_quick_filter = 1      # 快速筛选：1次采样（尽量减少慢模拟次数）
+        self.samples_normal_eval = 2       # 正常评估：2次采样
+        self.samples_final_verify = 4      # 最终验证：4次采样（配合硬过滤与自适应验证）
         self.samples_critical = 6          # 关键球（黑8）：6次采样（从8→6）
         
         # 2. Ghost Ball 智能剪枝
-        self.max_ghost_candidates = 12     # 从15→12个
+        self.max_ghost_candidates = 8      # 再减少候选，降低慢模拟概率
         self.max_pockets_per_ball = 2      # 每个球只尝试最近2个袋口
         self.max_speed_variants = 2        # 速度变体：2个
         self.max_spin_variants = 3         # 旋转变体：3个
         
         # 3. CMA-ES 优化
-        self.use_cma_es = True
+        self.use_cma_es = False            # 默认关闭：CMA 很耗时且容易被慢模拟拖死
         self.cma_population_size = 4       
         self.cma_generations = 2           
         self.cma_sigma = 0.5
@@ -80,7 +80,7 @@ class OptimizedNewAgent(Agent):
         
         # 6. 安全球简化
         self.safety_max_candidates = 5
-        self.safety_samples = 2
+        self.safety_samples = 1
         
         # 7. 动态超时（根据剩余球数）
         self.timeout_base = 10             # 基础10秒
@@ -103,6 +103,30 @@ class OptimizedNewAgent(Agent):
         self.cue_edge_margin = 0.15
         self.cue_edge_weight = 15.0
         self.min_pocket_probability = 0.4
+
+        # ============ 风险控制（针对“即时判负”）============
+        # PoolEnv 中以下情况会直接判负：白球+黑8同杆进袋、清台前黑8进袋
+        # 仅靠 analyze_shot_for_reward 的 -150 往往不足以压住进攻奖励，必须额外硬惩罚+验证
+        self.catastrophic_foul_penalty = 8000.0   # 非法黑8 / 白球+黑8
+        self.scratch_extra_penalty = 600.0        # 白球进袋（非即时判负，但会回滚+交换）
+        self.first_hit_extra_penalty = 120.0      # 首球犯规（回滚+交换）
+        self.no_rail_extra_penalty = 80.0         # 无碰库犯规（回滚+交换）
+        self.no_hit_extra_penalty = 200.0         # 未击中任何球（回滚+交换）
+        self.max_fallback_verifies = 3            # 最终动作若风险过高，最多额外验证/替换次数
+        self.black_pocket_danger_dist = 0.14      # 黑8离袋口过近时，提升验证/更偏向安全（米）
+        self.black_risk_extra_verifies = 2        # 黑8高风险局面额外验证次数（降低随机漏检）
+        # 不好进攻时的“走位杆”参数（替代随机安全球）
+        self.positional_trigger_score = 35.0      # 进攻分低于此时考虑走位杆
+        self.positional_prefer_margin = 6.0       # 走位杆超过进攻多少才选
+        self.opponent_pot_threat_weight = 35.0    # 走位杆核心：降低对手下一杆轻松进球概率（轻量近似）
+
+        # 走位杆候选规模（控制耗时；走位杆只需要“够用”，不需要大搜索）
+        self.positional_max_targets = 1
+        self.positional_angle_offsets = (-6.0, -3.0, 0.0, 3.0, 6.0)
+        self.positional_speeds = (1.8, 2.4)
+        self.positional_spin_variants = ((0.0, 0.0), (0.0, 0.10))
+        self.positional_random_angles = 3
+        self.positional_early_stop_score = 32.0
         
         self.my_target_type = None
         
@@ -135,6 +159,9 @@ class OptimizedNewAgent(Agent):
             last_state_snapshot = {bid: copy.deepcopy(ball) for bid, ball in balls.items()}
             
             print(f"[OptimizedAgent] 目标={prepared_targets}, 超时={timeout}s, 关键球={is_critical}")
+            dangerous_black = self._black8_is_dangerous(balls, table, prepared_targets)
+            if dangerous_black and not is_critical:
+                print("[OptimizedAgent] 检测到黑8高风险位置：提高验证强度并更保守选择")
             
             # ========== 优化后的决策流程 ==========
             
@@ -147,8 +174,22 @@ class OptimizedNewAgent(Agent):
             print(f"[Step 1] 生成 {len(ghost_candidates)} 个候选 - 耗时: {t1_elapsed:.2f}s")
             
             if not ghost_candidates:
-                print("[OptimizedAgent] 无候选，使用保守动作")
-                return self._conservative_action(balls, table)
+                print("[OptimizedAgent] 无候选，尝试生成“保证碰球”的fallback候选")
+                fallback_candidates = self._generate_contact_fallback_candidates(balls, table, prepared_targets)
+                if not fallback_candidates:
+                    print("[OptimizedAgent] fallback 也失败，使用保守动作")
+                    return self._conservative_action(balls, table)
+                best_action = None
+                best_score = -1e9
+                for cand in fallback_candidates:
+                    score = self._evaluate_action_fast(
+                        cand, balls, table, last_state_snapshot, prepared_targets,
+                        samples=1, return_stats=False
+                    )
+                    if score > best_score:
+                        best_score = score
+                        best_action = cand
+                return best_action if best_action is not None else self._conservative_action(balls, table)
             
             # Step 2: 快速筛选（2次采样）
             t2 = time.time()
@@ -166,7 +207,7 @@ class OptimizedNewAgent(Agent):
             
             # 按得分排序，取前K个
             quick_scores.sort(key=lambda x: x[0], reverse=True)
-            top_k = min(5, len(quick_scores))
+            top_k = min(3, len(quick_scores))
             top_candidates = [item[1] for item in quick_scores[:top_k]]
             
             t2_elapsed = time.time() - t2
@@ -174,23 +215,21 @@ class OptimizedNewAgent(Agent):
             print(f"[Step 2] 快速筛选 {len(ghost_candidates)}个候选×{self.samples_quick_filter}次采样={total_sims_step2}次模拟 - 耗时: {t2_elapsed:.2f}s")
             print(f"         保留前{len(top_candidates)}个，最高分: {quick_scores[0][0]:.1f}")
             
-            # 早停检查1：如果最高分已经很好
-            if quick_scores[0][0] > self.early_stop_score:
-                print(f"[OptimizedAgent] 早停1：得分 {quick_scores[0][0]:.1f} 已足够好")
-                return quick_scores[0][1]
-            
-            # 早停检查2：如果快速筛选得分>60，直接跳过精细评估和CMA-ES
+            # 早停检查：必须先做“致命犯规”验证，否则极易选到非法黑8/白球+黑8导致直接判负
             if quick_scores[0][0] > self.good_enough_score:
-                print(f"[OptimizedAgent] 早停2：快速筛选得分 {quick_scores[0][0]:.1f} 足够好，跳过后续优化")
-                # 只做一次精细验证
                 best_candidate = quick_scores[0][1]
-                samples = self.samples_critical if is_critical else self.samples_normal_eval
-                final_score = self._evaluate_action_fast(
+                # 自适应验证：一般局面少采样，高风险再加采样
+                base_verify = 3 if (not is_critical) else self.samples_critical
+                samples_verify = base_verify if is_critical else base_verify + (self.black_risk_extra_verifies if dangerous_black else 0)
+                verify_score, verify_stats = self._evaluate_action_fast(
                     best_candidate, balls, table, last_state_snapshot,
-                    prepared_targets, samples
+                    prepared_targets, samples_verify, return_stats=True
                 )
-                print(f"[OptimizedAgent] 验证得分: {final_score:.1f}")
-                return best_candidate
+                print(f"[OptimizedAgent] 早停候选验证: score={verify_score:.1f}, catastrophic={verify_stats['catastrophic']}/{verify_stats['samples']}")
+                if verify_stats["catastrophic"] == 0 and verify_score > self.good_enough_score:
+                    print(f"[OptimizedAgent] 早停确认：验证通过，跳过后续优化")
+                    return best_candidate
+                print(f"[OptimizedAgent] 早停取消：验证未通过，继续优化")
             
             # Step 3: 精细评估（3次采样）
             t3 = time.time()
@@ -198,11 +237,15 @@ class OptimizedNewAgent(Agent):
             
             refined_scores = []
             for candidate in top_candidates:
-                score = self._evaluate_action_fast(
+                score, stats = self._evaluate_action_fast(
                     candidate, balls, table, last_state_snapshot,
-                    prepared_targets, samples
+                    prepared_targets, samples, return_stats=True
                 )
-                refined_scores.append((score, candidate))
+                # 精评阶段：一旦出现“即时判负”样本，直接剔除该候选，降低漏检概率
+                if stats["catastrophic"] > 0:
+                    refined_scores.append((-1e9, candidate))
+                else:
+                    refined_scores.append((score, candidate))
             
             refined_scores.sort(key=lambda x: x[0], reverse=True)
             best_score, best_action = refined_scores[0]
@@ -212,15 +255,25 @@ class OptimizedNewAgent(Agent):
             print(f"[Step 3] 精细评估 {len(top_candidates)}个候选×{samples}次采样={total_sims_step3}次模拟 - 耗时: {t3_elapsed:.2f}s")
             print(f"         最高分: {best_score:.1f}")
             
-            # 早停检查3：如果精细评估得分足够好，跳过CMA-ES
+            # 早停检查3：精评得分高时可跳过 CMA，但必须先做最终验证（否则容易漏掉“误打黑8/白+8”）
             if best_score > self.good_enough_score:
-                print(f"[OptimizedAgent] 早停3：得分 {best_score:.1f} 足够好，跳过CMA-ES")
-                return best_action
+                base_verify = 3 if (not is_critical) else self.samples_critical
+                samples_verify = base_verify if is_critical else base_verify + (self.black_risk_extra_verifies if dangerous_black else 0)
+                verify_score, verify_stats = self._evaluate_action_fast(
+                    best_action, balls, table, last_state_snapshot,
+                    prepared_targets, samples_verify, return_stats=True
+                )
+                print(f"[OptimizedAgent] 早停3验证: score={verify_score:.1f}, catastrophic={verify_stats['catastrophic']}/{verify_stats['samples']}")
+                if verify_stats["catastrophic"] == 0 and verify_score > self.good_enough_score * 0.9:
+                    print(f"[OptimizedAgent] 早停3确认：验证通过，跳过后续优化")
+                    return best_action
+                print(f"[OptimizedAgent] 早停3取消：验证未通过，继续搜索/优化")
             
             # Step 4: CMA-ES 优化（仅对前1个候选）
             t4 = time.time()
             cma_improved = False
-            if self.use_cma_es and CMA_AVAILABLE and not is_critical:
+            # CMA-ES 很耗时，仅在“当前最优还不够好”时尝试
+            if self.use_cma_es and CMA_AVAILABLE and (not is_critical) and (best_score < self.good_enough_score):
                 cma_candidates = refined_scores[:self.cma_only_for_top_k]
                 
                 for i, (score, candidate) in enumerate(cma_candidates):
@@ -249,36 +302,95 @@ class OptimizedNewAgent(Agent):
             else:
                 print(f"[Step 4] 跳过CMA-ES (关键球或未启用)")
             
-            # Step 5: 安全球检查（仅在进攻得分低时）
+            # Step 5: 走位杆检查（进攻得分低/黑8高风险时）
             t5 = time.time()
             safety_chosen = False
-            if best_score < self.safety_trigger_score:
-                safe_action, safe_score = self._plan_safety_shot_fast(
+            safety_trigger = self.safety_trigger_score
+            if dangerous_black and not is_critical:
+                # 黑8离袋口近时，宁可打防守避免“误打黑8/白+8”的高方差
+                safety_trigger = max(safety_trigger, 45.0)
+            positional_trigger = max(safety_trigger, self.positional_trigger_score)
+            if best_score < positional_trigger:
+                safe_action, safe_score = self._plan_positional_shot_fast(
                     balls, table, last_state_snapshot, prepared_targets
                 )
                 
-                if safe_score > best_score + self.safety_prefer_margin:
-                    print(f"[Step 5] 安全球检查 - 选择安全球: {safe_score:.1f} (vs 进攻 {best_score:.1f})")
+                if safe_action is not None and safe_score > best_score + self.positional_prefer_margin:
+                    print(f"[Step 5] 走位杆检查 - 选择走位杆: {safe_score:.1f} (vs 进攻 {best_score:.1f})")
                     safety_chosen = True
                     best_action = safe_action
                     best_score = safe_score
             
             t5_elapsed = time.time() - t5
-            if best_score < self.safety_trigger_score:
-                print(f"[Step 5] 安全球检查 - 耗时: {t5_elapsed:.2f}s, 选择: {'安全球' if safety_chosen else '进攻'}")
+            if best_score < positional_trigger:
+                print(f"[Step 5] 走位杆检查 - 耗时: {t5_elapsed:.2f}s, 选择: {'走位杆' if safety_chosen else '进攻'}")
             else:
                 print(f"[Step 5] 跳过安全球检查 (进攻得分{best_score:.1f}已足够)")
             
             # Step 6: 最终验证（4次采样）
             t6 = time.time()
-            samples_final = self.samples_critical if is_critical else self.samples_final_verify
-            final_score = self._evaluate_action_fast(
+            samples_final = self.samples_critical if is_critical else (
+                self.samples_final_verify + (self.black_risk_extra_verifies if dangerous_black else 0)
+            )
+            final_score, final_stats = self._evaluate_action_fast(
                 best_action, balls, table, last_state_snapshot,
-                prepared_targets, samples_final
+                prepared_targets, samples_final, return_stats=True
             )
             t6_elapsed = time.time() - t6
             
-            print(f"[Step 6] 最终验证 1个动作×{samples_final}次采样 - 耗时: {t6_elapsed:.2f}s, 得分: {final_score:.1f}")
+            print(f"[Step 6] 最终验证 1个动作×{samples_final}次采样 - 耗时: {t6_elapsed:.2f}s, 得分: {final_score:.1f}, catastrophic={final_stats['catastrophic']}/{final_stats['samples']}")
+
+            # 若最终验证仍出现“即时判负”样本，尝试从备选中挑一个更稳的
+            if final_stats["catastrophic"] > 0:
+                fallback_action = self._pick_safer_action(
+                    refined_scores=refined_scores,
+                    balls=balls,
+                    table=table,
+                    last_state_snapshot=last_state_snapshot,
+                    prepared_targets=prepared_targets,
+                    is_critical=is_critical,
+                )
+                if fallback_action is not None:
+                    print("[OptimizedAgent] 最终验证发现致命风险，已切换到更安全的备选动作")
+                    best_action = fallback_action
+                else:
+                    # 强硬兜底：绝不带“致命风险”出杆。尝试安全球，再尝试保证碰球的兜底候选。
+                    print("[OptimizedAgent] 最终验证发现致命风险且无可用备选：强制切换到安全/兜底动作")
+
+                    safety_action, _ = self._plan_positional_shot_fast(
+                        balls, table, last_state_snapshot, prepared_targets
+                    )
+                    if safety_action is not None:
+                        verify_score, verify_stats = self._evaluate_action_fast(
+                            safety_action, balls, table, last_state_snapshot,
+                            prepared_targets, samples_final, return_stats=True
+                        )
+                        print(f"[OptimizedAgent] safety 再验证: score={verify_score:.1f}, catastrophic={verify_stats['catastrophic']}/{verify_stats['samples']}")
+                        if verify_stats["catastrophic"] == 0:
+                            best_action = safety_action
+                            return best_action
+
+                    contact_candidates = self._generate_contact_fallback_candidates(
+                        balls, table, prepared_targets, max_targets=2
+                    )
+                    best_contact = None
+                    best_contact_score = -1e18
+                    for cand in contact_candidates:
+                        sc, st = self._evaluate_action_fast(
+                            cand, balls, table, last_state_snapshot,
+                            prepared_targets, samples=min(3, samples_final), return_stats=True
+                        )
+                        if st["catastrophic"] > 0:
+                            continue
+                        if sc > best_contact_score:
+                            best_contact_score = sc
+                            best_contact = cand
+                    if best_contact is not None:
+                        print(f"[OptimizedAgent] 兜底碰球动作启用: score={best_contact_score:.1f}")
+                        return best_contact
+
+                    print("[OptimizedAgent] 所有兜底均失败，使用保守动作")
+                    return self._conservative_action(balls, table)
             
             total_elapsed = time.time() - decision_start
             total_sims = total_sims_step2 + total_sims_step3
@@ -289,10 +401,16 @@ class OptimizedNewAgent(Agent):
             print(f"\n[总结] 总耗时: {total_elapsed:.2f}s, 总模拟次数: ~{total_sims}, 最终得分: {best_score:.1f}")
             print(f"       时间分布: 生成{t1_elapsed:.1f}s + 筛选{t2_elapsed:.1f}s + 精评{t3_elapsed:.1f}s + CMA{t4_elapsed:.1f}s + 安全{t5_elapsed:.1f}s + 验证{t6_elapsed:.1f}s")
             
-            return best_action if best_action else self._conservative_action(balls, table)
+            final_action = best_action if best_action else self._conservative_action(balls, table)
+            final_action = self._sanitize_action(final_action)
+            return final_action if final_action is not None else self._conservative_action(balls, table)
         
         except TimeoutError:
             print(f"[OptimizedAgent] 超时 ({timeout}s)，使用保守动作")
+            return self._conservative_action(balls, table)
+        except Exception as e:
+            # 兜底：评测时绝不能让 agent 崩溃导致整局中断
+            print(f"[OptimizedAgent] decision 异常，使用保守动作: {e}")
             return self._conservative_action(balls, table)
         
         finally:
@@ -388,6 +506,10 @@ class OptimizedNewAgent(Agent):
                             'a': float(spin_a),
                             'b': float(spin_b)
                         })
+
+        # 兜底：加入“直接撞击最近目标球”的候选，避免路径检查过严导致无解
+        direct_hits = self._generate_contact_fallback_candidates(balls, table, player_targets, max_targets=2)
+        candidates.extend(direct_hits)
         
         # 限制总候选数
         if len(candidates) > self.max_ghost_candidates:
@@ -395,6 +517,50 @@ class OptimizedNewAgent(Agent):
             indices = np.random.choice(len(candidates), self.max_ghost_candidates, replace=False)
             candidates = [candidates[i] for i in indices]
         
+        return candidates
+
+    def _generate_contact_fallback_candidates(self, balls, table, player_targets, max_targets=1):
+        """生成低成本兜底候选：保证至少能碰到合法目标球，避免 NO_HIT/首球犯规。
+
+        设计目标：
+        - 不追求进球，只要不犯规并尽量别白球落袋
+        - 候选数量小，便于快速评估
+        """
+        cue_ball = balls.get('cue')
+        if cue_ball is None or cue_ball.state.s == 4:
+            return []
+        cue_pos = np.array(cue_ball.state.rvw[0][:2], dtype=float)
+
+        # 选最近的若干目标球
+        targets = []
+        for bid in player_targets:
+            ball = balls.get(bid)
+            if ball is None or ball.state.s == 4:
+                continue
+            ball_pos = np.array(ball.state.rvw[0][:2], dtype=float)
+            targets.append((float(np.linalg.norm(ball_pos - cue_pos)), bid, ball_pos))
+        if not targets:
+            return []
+        targets.sort(key=lambda x: x[0])
+        targets = targets[:max_targets]
+
+        candidates = []
+        angle_offsets = (-2.0, -1.0, 0.0, 1.0, 2.0)
+        for dist, _, ball_pos in targets:
+            direction = ball_pos - cue_pos
+            if np.linalg.norm(direction) < 1e-6:
+                continue
+            base_phi = math.degrees(math.atan2(direction[1], direction[0])) % 360
+            # 力度：足够推进目标球碰库，避免太大导致白球乱飞/落袋
+            base_v0 = float(np.clip(1.6 + dist * 1.8, 1.8, 4.2))
+            for off in angle_offsets:
+                candidates.append({
+                    'V0': base_v0,
+                    'phi': float((base_phi + off) % 360),
+                    'theta': 2.0,
+                    'a': 0.0,
+                    'b': 0.0
+                })
         return candidates
     
     def _is_path_blocked_fast(self, start, end, balls, ignore_id):
@@ -439,13 +605,78 @@ class OptimizedNewAgent(Agent):
     
     # ========== 快速评估函数 ==========
     
-    def _evaluate_action_fast(self, action, balls, table, last_state, targets, samples):
-        """快速评估（使用分层采样）"""
+    def _evaluate_action_fast(self, action, balls, table, last_state, targets, samples, return_stats=False):
+        """快速评估（使用分层采样）
+
+        关键：对 PoolEnv 的“即时判负”规则做硬风控（非法黑8、白球+黑8）。
+        """
+        action = self._sanitize_action(action)
+        if action is None:
+            empty = {
+                "samples": 0,
+                "catastrophic": 0,
+                "scratch": 0,
+                "foul_first_hit": 0,
+                "foul_no_rail": 0,
+                "no_hit": 0,
+                "illegal_eight": 0,
+                "white_and_eight": 0,
+            }
+            return (-500.0, empty) if return_stats else -500.0
+        return self._evaluate_action_fast_impl(
+            action, balls, table, last_state, targets, samples, return_stats=return_stats
+        )
+
+    def _sanitize_action(self, action):
+        """确保动作字典完整且数值在合法范围内，避免评测过程因异常动作崩溃。"""
+        if action is None or not isinstance(action, dict):
+            return None
+        required = ("V0", "phi", "theta", "a", "b")
+        if any(k not in action for k in required):
+            return None
+        try:
+            V0 = float(action["V0"])
+            phi = float(action["phi"])
+            theta = float(action["theta"])
+            a = float(action["a"])
+            b = float(action["b"])
+        except Exception:
+            return None
+
+        # clip 到环境允许范围
+        V0 = float(np.clip(V0, 0.5, 8.0))
+        phi = float(phi % 360.0)
+        theta = float(np.clip(theta, 0.0, 90.0))
+        a = float(np.clip(a, -0.5, 0.5))
+        b = float(np.clip(b, -0.5, 0.5))
+        return {"V0": V0, "phi": phi, "theta": theta, "a": a, "b": b}
+
+    def _evaluate_action_fast_impl(self, action, balls, table, last_state, targets, samples, return_stats):
         scores = []
+        catastrophic = 0
+        scratch = 0
+        foul_first_hit = 0
+        foul_no_rail = 0
+        no_hit = 0
+        illegal_eight = 0
+        white_and_eight = 0
+
+        def _empty_stats():
+            return {
+                "samples": 0,
+                "catastrophic": 0,
+                "scratch": 0,
+                "foul_first_hit": 0,
+                "foul_no_rail": 0,
+                "no_hit": 0,
+                "illegal_eight": 0,
+                "white_and_eight": 0,
+            }
         
         for _ in range(samples):
             sim_balls = {bid: copy.deepcopy(ball) for bid, ball in balls.items()}
-            sim_table = copy.deepcopy(table)
+            # Table 在物理模拟中是只读结构，避免 deepcopy 可以显著省时
+            sim_table = table
             cue = pt.Cue(cue_ball_id="cue")
             shot = pt.System(table=sim_table, balls=sim_balls, cue=cue)
             
@@ -455,68 +686,252 @@ class OptimizedNewAgent(Agent):
             )
             
             if self._is_degenerate_params(noisy):
-                return -500.0
+                return (-500.0, _empty_stats()) if return_stats else -500.0
             
             shot.cue.set_state(**noisy)
             
             try:
                 pt.simulate(shot, inplace=True)
             except Exception:
-                return -500.0
+                return (-500.0, _empty_stats()) if return_stats else -500.0
             
             # 使用原有的奖励函数
             base_score = analyze_shot_for_reward(shot, last_state, targets)
             
             # 添加走位和防守奖励
             bonus = self._calculate_strategic_bonus(shot, table, targets, last_state)
-            scores.append(base_score + bonus)
+            foul_info = self._analyze_fouls(shot, last_state, targets)
+            sample_score = base_score + bonus
+
+            # 即时判负：必须极重惩罚（否则会被 +50/球 等奖励掩盖）
+            if foul_info["WHITE_AND_EIGHT"] or foul_info["ILLEGAL_EIGHT"]:
+                catastrophic += 1
+                if foul_info["WHITE_AND_EIGHT"]:
+                    white_and_eight += 1
+                if foul_info["ILLEGAL_EIGHT"]:
+                    illegal_eight += 1
+                sample_score -= self.catastrophic_foul_penalty
+            elif foul_info["CUE_POCKETED"]:
+                scratch += 1
+                sample_score -= self.scratch_extra_penalty
+
+            if foul_info["FOUL_FIRST_HIT"]:
+                foul_first_hit += 1
+                sample_score -= self.first_hit_extra_penalty
+            if foul_info["FOUL_NO_RAIL"]:
+                foul_no_rail += 1
+                sample_score -= self.no_rail_extra_penalty
+            if foul_info["NO_HIT"]:
+                no_hit += 1
+                sample_score -= self.no_hit_extra_penalty
+
+            scores.append(sample_score)
         
-        return np.mean(scores) if scores else -500.0
+        mean_score = float(np.mean(scores)) if scores else -500.0
+        if return_stats:
+            return mean_score, {
+                "samples": int(samples),
+                "catastrophic": int(catastrophic),
+                "scratch": int(scratch),
+                "foul_first_hit": int(foul_first_hit),
+                "foul_no_rail": int(foul_no_rail),
+                "no_hit": int(no_hit),
+                "illegal_eight": int(illegal_eight),
+                "white_and_eight": int(white_and_eight),
+            }
+        return mean_score
+
+    def _analyze_fouls(self, shot, last_state, targets):
+        """快速检测本杆是否触发关键犯规（尽量对齐 PoolEnv 规则）"""
+        new_pocketed = [
+            bid for bid, b in shot.balls.items()
+            if bid in last_state and b.state.s == 4 and last_state[bid].state.s != 4
+        ]
+        cue_pocketed = "cue" in new_pocketed
+        eight_pocketed = "8" in new_pocketed
+        legal_eight = (len(targets) == 1 and targets[0] == "8")
+        illegal_eight = eight_pocketed and (not legal_eight)
+        white_and_eight = cue_pocketed and eight_pocketed
+
+        # 首球接触判断（copy 自 agent.py/poolenv.py 的判定方式）
+        first_contact_ball_id = None
+        valid_ball_ids = {'1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15'}
+        for e in shot.events:
+            et = str(e.event_type).lower()
+            ids = list(e.ids) if hasattr(e, 'ids') else []
+            if ('cushion' not in et) and ('pocket' not in et) and ('cue' in ids):
+                other_ids = [i for i in ids if i != 'cue' and i in valid_ball_ids]
+                if other_ids:
+                    first_contact_ball_id = other_ids[0]
+                    break
+
+        foul_first_hit = False
+        no_hit = False
+        if first_contact_ball_id is None:
+            no_hit = True
+            if len(last_state) > 2 or targets != ['8']:
+                foul_first_hit = True
+        else:
+            if first_contact_ball_id not in targets:
+                foul_first_hit = True
+
+        # 无碰库犯规（无进球+母球/首碰球均未碰库）
+        cue_hit_cushion = False
+        target_hit_cushion = False
+        for e in shot.events:
+            et = str(e.event_type).lower()
+            ids = list(e.ids) if hasattr(e, 'ids') else []
+            if 'cushion' in et:
+                if 'cue' in ids:
+                    cue_hit_cushion = True
+                if first_contact_ball_id is not None and first_contact_ball_id in ids:
+                    target_hit_cushion = True
+        foul_no_rail = (len(new_pocketed) == 0 and first_contact_ball_id is not None and (not cue_hit_cushion) and (not target_hit_cushion))
+
+        return {
+            "CUE_POCKETED": cue_pocketed,
+            "EIGHT_POCKETED": eight_pocketed,
+            "ILLEGAL_EIGHT": illegal_eight,
+            "WHITE_AND_EIGHT": white_and_eight,
+            "FOUL_FIRST_HIT": foul_first_hit,
+            "FOUL_NO_RAIL": foul_no_rail,
+            "NO_HIT": no_hit,
+        }
+
+    def _pick_safer_action(self, refined_scores, balls, table, last_state_snapshot, prepared_targets, is_critical):
+        """当最优动作存在致命风险时，从候选中挑更稳的（限制验证次数避免拖慢）"""
+        if not refined_scores:
+            return None
+        samples_verify = self.samples_critical if is_critical else self.samples_final_verify
+        checked = 0
+        for _, candidate in refined_scores:
+            verify_score, verify_stats = self._evaluate_action_fast(
+                candidate, balls, table, last_state_snapshot, prepared_targets, samples_verify, return_stats=True
+            )
+            checked += 1
+            if verify_stats["catastrophic"] == 0:
+                return candidate
+            if checked >= self.max_fallback_verifies:
+                break
+        return None
+
+    def _black8_is_dangerous(self, balls, table, prepared_targets):
+        """黑8在非清台阶段若离袋口很近，容易出现意外进袋（即时判负）。"""
+        if len(prepared_targets) == 1 and prepared_targets[0] == "8":
+            return False
+        black = balls.get("8")
+        if black is None or black.state.s == 4:
+            return False
+        black_pos = np.array(black.state.rvw[0][:2], dtype=float)
+        min_dist = float("inf")
+        for pocket in table.pockets.values():
+            pocket_pos = np.array(pocket.center[:2], dtype=float)
+            min_dist = min(min_dist, float(np.linalg.norm(black_pos - pocket_pos)))
+        return min_dist < self.black_pocket_danger_dist
     
     def _calculate_strategic_bonus(self, shot, table, targets, last_state):
-        """计算战略奖励（走位+防守）"""
+        """计算战略奖励（走位+防守）
+
+        重要：即使本杆不进球，也要给“走位变好”的局面一定正向奖励，
+        否则走位杆永远不会被选中。
+        """
+        cue_ball = shot.balls.get("cue")
+        if cue_ball is None or cue_ball.state.s == 4:
+            return -200.0
+
         bonus = 0.0
-        
-        # 检查进球
-        pocketed = [bid for bid, b in shot.balls.items()
-                   if b.state.s == 4 and last_state[bid].state.s != 4 and bid in targets]
-        
-        if not pocketed:
-            return bonus
-        
-        # 走位奖励
-        remaining = [bid for bid in targets if bid not in pocketed]
-        if remaining:
-            cue_pos = shot.balls['cue'].state.rvw[0][:2]
-            
-            # 找到下一个最近的目标球
-            next_dists = []
-            for next_id in remaining:
-                if next_id in shot.balls and shot.balls[next_id].state.s != 4:
-                    next_pos = shot.balls[next_id].state.rvw[0][:2]
-                    next_dists.append(np.linalg.norm(cue_pos - next_pos))
-            
-            if next_dists:
-                min_dist = min(next_dists)
-                if min_dist < self.cue_next_ball_radius:
-                    bonus += self.cue_next_ball_weight * (1 - min_dist / self.cue_next_ball_radius)
-        
-        # 防守奖励（简化）
+        cue_pos = np.array(cue_ball.state.rvw[0][:2], dtype=float)
+
+        # 本杆是否打进己方球：如果继续出杆，对手威胁不重要（省大量计算）
+        pocketed_own = [
+            bid for bid, b in shot.balls.items()
+            if bid in last_state and b.state.s == 4 and last_state[bid].state.s != 4 and bid in targets
+        ]
+
+        # 白球远离袋口（降低白球/白+8风险）
+        min_pocket_dist = float("inf")
+        for pocket in table.pockets.values():
+            pocket_pos = np.array(pocket.center[:2], dtype=float)
+            min_pocket_dist = min(min_pocket_dist, float(np.linalg.norm(cue_pos - pocket_pos)))
+        bonus += 18.0 * float(np.clip((min_pocket_dist - 0.18) / 0.27, 0.0, 1.0))
+
+        # 白球靠近中心（提升下杆可解性）
+        center = np.array([table.l / 2.0, table.w / 2.0], dtype=float)
+        dist_center = float(np.linalg.norm(cue_pos - center))
+        max_center_dist = float(np.linalg.norm(np.array([table.l, table.w], dtype=float) / 2.0))
+        bonus += 10.0 * float(np.clip(1.0 - dist_center / max_center_dist, 0.0, 1.0))
+
+        # 白球靠近下一目标球（进球后更重要；无进球时也有一定意义）
+        remaining_positions = []
+        for bid in targets:
+            ball = shot.balls.get(bid)
+            if ball is None or ball.state.s == 4:
+                continue
+            remaining_positions.append(np.array(ball.state.rvw[0][:2], dtype=float))
+        if remaining_positions:
+            min_dist = float(min(np.linalg.norm(cue_pos - pos) for pos in remaining_positions))
+            if min_dist < self.cue_next_ball_radius:
+                bonus += self.cue_next_ball_weight * (1 - min_dist / self.cue_next_ball_radius)
+
+        # 防守：只有在“未打进己方球（将换对手）”时才计算对手威胁
+        if not pocketed_own:
+            opponent_threat = self._estimate_opponent_pot_threat(shot, table)
+            bonus -= self.opponent_pot_threat_weight * opponent_threat
+
+        return float(bonus)
+
+    def _estimate_opponent_pot_threat(self, shot, table):
+        """粗略估计对手下一杆直接进球威胁（0~1）。
+
+        直觉：如果白球到对手球直线路径通畅，且对手球到某袋口也通畅，并且角度不极端，
+        则威胁高。该指标用于走位杆/防守时的排序，不追求物理精确。
+        """
+        cue = shot.balls.get("cue")
+        if cue is None or cue.state.s == 4:
+            return 0.0
+        cue_pos = np.array(cue.state.rvw[0][:2], dtype=float)
+
         enemy_ids = self._enemy_target_ids()
-        if enemy_ids:
-            cue_pos = shot.balls['cue'].state.rvw[0][:2]
-            enemy_dists = []
-            
-            for eid in enemy_ids:
-                if eid in shot.balls and shot.balls[eid].state.s != 4:
-                    e_pos = shot.balls[eid].state.rvw[0][:2]
-                    enemy_dists.append(np.linalg.norm(cue_pos - e_pos))
-            
-            if enemy_dists:
-                avg_dist = np.mean(enemy_dists)
-                bonus += self.enemy_distance_weight * min(avg_dist / 2.0, 1.0)
-        
-        return bonus
+        pockets = list(table.pockets.values())
+        pocket_positions = [np.array(p.center[:2], dtype=float) for p in pockets]
+
+        # 轻量近似：只看距离白球最近的少数对手球，并且每球只看最近的少数袋口
+        enemy_infos = []
+        for eid in enemy_ids:
+            ball = shot.balls.get(eid)
+            if ball is None or ball.state.s == 4:
+                continue
+            ball_pos = np.array(ball.state.rvw[0][:2], dtype=float)
+            enemy_infos.append((float(np.linalg.norm(ball_pos - cue_pos)), eid, ball_pos))
+        enemy_infos.sort(key=lambda x: x[0])
+        enemy_infos = enemy_infos[:2]
+
+        best = 0.0
+        for d_cb, eid, ball_pos in enemy_infos:
+            # cue -> enemy 必须通畅（只做这一条阻挡检查，避免昂贵的 enemy->pocket 全检查）
+            if self._is_path_blocked_fast(cue_pos, ball_pos, shot.balls, ignore_id=eid):
+                continue
+
+            cue_to_ball = ball_pos - cue_pos
+            if d_cb < 1e-3:
+                continue
+            u_cb = cue_to_ball / d_cb
+
+            # 最近两个袋口即可
+            pocket_dists = [(float(np.linalg.norm(ball_pos - ppos)), ppos) for ppos in pocket_positions]
+            pocket_dists.sort(key=lambda x: x[0])
+            for d_bp, ppos in pocket_dists[:2]:
+                ball_to_pocket = ppos - ball_pos
+                if d_bp < 1e-3:
+                    continue
+                u_bp = ball_to_pocket / d_bp
+                align = float(np.clip(np.dot(u_cb, u_bp), -1.0, 1.0))
+                if align <= 0.25:
+                    continue
+                dist_factor = 1.0 / (1.0 + 0.8 * d_cb + 0.6 * d_bp)
+                best = max(best, align * dist_factor)
+
+        return float(np.clip(best * 6.0, 0.0, 1.0))
     
     # ========== CMA-ES 快速优化 ==========
     
@@ -526,6 +941,9 @@ class OptimizedNewAgent(Agent):
             return initial_action, self._evaluate_action_fast(
                 initial_action, balls, table, last_state, targets, samples
             )
+        initial_action = self._sanitize_action(initial_action)
+        if initial_action is None:
+            return self._random_action(), -500.0
         
         # 评估计数器，防止无限循环
         eval_count = [0]
@@ -589,34 +1007,101 @@ class OptimizedNewAgent(Agent):
     
     # ========== 安全球快速规划 ==========
     
-    def _plan_safety_shot_fast(self, balls, table, last_state, targets):
-        """快速安全球规划"""
+    def _plan_positional_shot_fast(self, balls, table, last_state, targets):
+        """快速走位杆规划：保证合法首碰，尽量把白球走到更好下一杆位置。"""
+        cue_ball = balls.get("cue")
+        if cue_ball is None or cue_ball.state.s == 4:
+            return None, -500.0
+
+        cue_pos = np.array(cue_ball.state.rvw[0][:2], dtype=float)
         candidates = []
-        
-        # 生成5个安全球候选
-        for angle in np.linspace(0, 360, self.safety_max_candidates, endpoint=False):
-            V0 = np.random.uniform(*self.safe_speed_bounds)
+
+        # 1) 以“碰到合法目标球”为前提：瞄准最近目标球，轻推+小角偏转 + 轻跟/拉
+        target_infos = []
+        for bid in targets:
+            ball = balls.get(bid)
+            if ball is None or ball.state.s == 4:
+                continue
+            pos = np.array(ball.state.rvw[0][:2], dtype=float)
+            target_infos.append((float(np.linalg.norm(pos - cue_pos)), bid, pos))
+        target_infos.sort(key=lambda x: x[0])
+        target_infos = target_infos[: self.positional_max_targets]
+
+        angle_offsets = self.positional_angle_offsets
+        speeds = self.positional_speeds
+        spin_variants = self.positional_spin_variants
+        for dist, _, pos in target_infos:
+            direction = pos - cue_pos
+            if np.linalg.norm(direction) < 1e-6:
+                continue
+            base_phi = math.degrees(math.atan2(direction[1], direction[0])) % 360
+            for v0 in speeds:
+                # 距离极近时减小力度，避免误进袋/乱飞
+                tuned_v0 = float(np.clip(v0 + 0.2 * dist, 1.6, 3.2))
+                for off in angle_offsets:
+                    for a, b in spin_variants:
+                        candidates.append({
+                            "V0": tuned_v0,
+                            "phi": float((base_phi + off) % 360),
+                            "theta": 2.0,
+                            "a": float(a),
+                            "b": float(b),
+                        })
+
+        # 2) 少量随机角度补充（极端拥挤/无明显目标时兜底）
+        for angle in np.linspace(0, 360, self.positional_random_angles, endpoint=False):
+            V0 = float(np.random.uniform(*self.safe_speed_bounds))
             candidates.append({
-                'V0': float(V0),
-                'phi': float(angle),
-                'theta': 2.0,
-                'a': 0.0,
-                'b': 0.0
+                "V0": V0,
+                "phi": float(angle),
+                "theta": 2.0,
+                "a": 0.0,
+                "b": 0.0,
             })
         
         best_action = None
         best_score = -500
         
         for candidate in candidates:
-            score = self._evaluate_action_fast(
+            if self._is_degenerate_params(candidate):
+                continue
+            score, st = self._evaluate_action_fast(
                 candidate, balls, table, last_state, targets,
-                self.safety_samples
+                self.safety_samples, return_stats=True
             )
+            # 安全球：硬过滤（避免把“安全”打成直接判负/回滚送机会）
+            if st.get("catastrophic", 0) > 0:
+                continue
+            if st.get("no_hit", 0) > 0:
+                continue
+            # 首球犯规在防守中尤其致命：对手得到干净局面
+            if st.get("foul_first_hit", 0) > 0:
+                continue
             if score > best_score:
                 best_score = score
                 best_action = candidate
+                if best_score >= self.positional_early_stop_score:
+                    break
         
+        # 如果全被过滤，退回到“保证碰球”的兜底候选中挑一个
+        if best_action is None:
+            fallback = self._generate_contact_fallback_candidates(balls, table, targets, max_targets=2)
+            for cand in fallback:
+                score, st = self._evaluate_action_fast(
+                    cand, balls, table, last_state, targets,
+                    max(1, self.safety_samples), return_stats=True
+                )
+                if st.get("catastrophic", 0) > 0 or st.get("no_hit", 0) > 0 or st.get("foul_first_hit", 0) > 0:
+                    continue
+                if score > best_score:
+                    best_score = score
+                    best_action = cand
+
         return best_action, best_score
+
+    # 向后兼容：旧名仍可用
+    def _plan_safety_shot_fast(self, balls, table, last_state, targets):
+        return self._plan_positional_shot_fast(balls, table, last_state, targets)
     
     # ========== 辅助函数 ==========
     

@@ -19,6 +19,7 @@ import re
 SHOT_RE = re.compile(r"\[SHOT (\d+)] player=([AB]) agent=([A-Za-z0-9_]+)")
 GAME_START_RE = re.compile(r"\[GAME (\d+)] PlayerA=([A-Za-z0-9_]+)")
 GAME_DONE_RE = re.compile(r"\[GAME (\d+) DONE] info=\{'winner': '([ABSAME]+)', 'hit_count': (\d+)\}")
+INFO_AGENTS_RE = re.compile(r"\[INFO]\s+AgentA=([A-Za-z0-9_]+),\s*AgentB=([A-Za-z0-9_]+)")
 
 
 def parse_log(path: str):
@@ -33,6 +34,9 @@ def parse_log(path: str):
     current_game = None
     game_agents = defaultdict(lambda: {'A': None, 'B': None})
     last_shot = None
+    global_agents = set()
+    agent_a_name = None
+    agent_b_name = None
 
     with open(path, 'r', encoding='utf-8') as f:
         for raw_line in f:
@@ -44,6 +48,15 @@ def parse_log(path: str):
                 player_a_name = m.group(2)
                 current_game = game_id
                 game_agents[game_id]['A'] = player_a_name
+                global_agents.add(player_a_name)
+                # If we know the global matchup (AgentA/AgentB), infer Player B even if it never shoots.
+                if agent_a_name and agent_b_name:
+                    if game_id % 2 == 0:
+                        # i even: Player A uses AgentA, Player B uses AgentB
+                        game_agents[game_id]['B'] = agent_b_name
+                    else:
+                        # i odd: swapped
+                        game_agents[game_id]['B'] = agent_a_name
                 continue
 
             m = GAME_DONE_RE.match(line)
@@ -54,6 +67,9 @@ def parse_log(path: str):
                 hit_counts.append(hit_count)
 
                 player_map = game_agents.get(game_id, {})
+                # Best-effort inference if Player B never shot and global agent names weren't available at GAME start.
+                if player_map.get('B') is None and len(global_agents) == 2 and player_map.get('A') in global_agents:
+                    player_map['B'] = next(a for a in global_agents if a != player_map.get('A'))
                 if winner == 'A':
                     winners[player_map.get('A', 'PlayerA')] += 1
                 elif winner == 'B':
@@ -79,12 +95,21 @@ def parse_log(path: str):
                     continue
                 game_agents[current_game][player] = agent_name
                 shots_by_agent[agent_name] += 1
+                global_agents.add(agent_name)
                 last_shot = {
                     'game': current_game,
                     'shot': shot_id,
                     'player': player,
                     'agent': agent_name
                 }
+                continue
+
+            m = INFO_AGENTS_RE.match(line)
+            if m:
+                agent_a_name = m.group(1)
+                agent_b_name = m.group(2)
+                global_agents.add(agent_a_name)
+                global_agents.add(agent_b_name)
                 continue
 
             striped = line.strip()
