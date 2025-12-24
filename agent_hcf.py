@@ -59,8 +59,8 @@ class OptimizedNewAgent(Agent):
         self.samples_critical = 6          # 关键球（黑8）：6次采样（从8→6）
         
         # 2. Ghost Ball 智能剪枝
-        self.max_ghost_candidates = 12     # 稍增候选，提高对强敌的进攻稳定性
-        self.max_pockets_per_ball = 3      # 每个球尝试更多袋口
+        self.max_ghost_candidates = 12     # Ghost 基础候选（球+袋）上限
+        self.max_pockets_per_ball = 6      # 每个球尝试袋口数量上限
         self.max_speed_variants = 3        # 速度变体：3个
         self.max_spin_variants = 3         # 旋转变体：3个
         
@@ -118,15 +118,20 @@ class OptimizedNewAgent(Agent):
         # 不好进攻时的“走位杆”参数（替代随机安全球）
         self.positional_trigger_score = 25.0      # 进攻分低于此时考虑走位杆
         self.positional_prefer_margin = 10.0      # 走位杆超过进攻多少才选
-        self.opponent_pot_threat_weight = 30.0    # 走位杆核心：降低对手下一杆轻松进球概率（轻量近似）
-        self.snooker_bonus_weight = 25.0          # 走位杆奖励：隐藏白球，降低对手视线
+        self.opponent_pot_threat_weight = 15.0    # 走位杆核心：降低对手下一杆轻松进球概率（轻量近似）
+        self.opponent_sdi_weight = 22.0           # 诱导失误：提升对手最容易球的难度
+        self.snooker_penalty = 18.0               # 避免无合法视线导致回滚（对手犯规不改变局面）
+        self.opponent_sdi_weight_positional = 45.0
+        self.snooker_penalty_positional = 35.0
 
         # 走位杆候选规模（控制耗时；走位杆只需要“够用”，不需要大搜索）
-        self.positional_max_targets = 1
+        self.positional_max_targets = 2
         self.positional_angle_offsets = (-6.0, -3.0, 0.0, 3.0, 6.0)
+        self.positional_angle_offsets_wide = (-12.0, -8.0, -4.0, 0.0, 4.0, 8.0, 12.0)
         self.positional_speeds = (1.8, 2.4)
         self.positional_spin_variants = ((0.0, 0.0), (0.0, 0.10))
         self.positional_random_angles = 3
+        self.positional_random_offsets = 4
         self.positional_early_stop_score = 32.0
 
         # 噪声采样：使用局部 RNG + 共同随机数降低方差
@@ -186,7 +191,7 @@ class OptimizedNewAgent(Agent):
             
             # ========== 优化后的决策流程 ==========
             
-            # Step 1: 智能生成 Ghost Ball 候选（450→15个）
+            # Step 1: 智能生成 Ghost Ball 候选（解析筛选 → 少量变体）
             t1 = time.time()
             ghost_candidates = self._generate_smart_ghost_candidates(
                 balls, table, prepared_targets
@@ -442,16 +447,12 @@ class OptimizedNewAgent(Agent):
     # ========== 智能候选生成（核心优化）==========
     
     def _generate_smart_ghost_candidates(self, balls, table, player_targets):
-        """智能生成高质量 Ghost Ball 候选（450→15个）
-        
-        优化策略：
-        1. 只对前3个目标球生成候选
-        2. 每个球只尝试最近2个袋口
-        3. 速度变体：2个（基础速度 × [0.9, 1.1]）
-        4. 旋转变体：3个（无旋转、低杆、高杆）
-        5. 预筛选：移除明显不可行的候选
-        
-        复杂度：3球 × 2袋口 × 2速度 × 3旋转 = 36个候选
+        """智能生成高质量 Ghost Ball 候选（解析筛选 → 少量变体）。
+
+        策略：
+        1. 对全部目标球和袋口做解析打点评分（遮挡+切角+距离）
+        2. 选 Top-K 组合再生成少量速度/旋转变体
+        3. 无解时使用兜底“直接碰球”候选
         """
         candidates = []
         cue_ball = balls.get('cue')
@@ -462,7 +463,7 @@ class OptimizedNewAgent(Agent):
         pockets = list(table.pockets.values())
         pocket_positions = [np.array(p.center[:2], dtype=float) for p in pockets]
         
-        # 只处理前3个目标球（按距离排序）
+        # 全部目标球
         valid_targets = []
         for bid in player_targets:
             ball = balls.get(bid)
@@ -472,72 +473,92 @@ class OptimizedNewAgent(Agent):
             dist = np.linalg.norm(cue_pos - ball_pos)
             valid_targets.append((dist, bid, ball_pos))
         
-        valid_targets.sort(key=lambda x: x[0])
-        valid_targets = valid_targets[:3]  # 只取最近的3个球
-        
+        if not valid_targets:
+            return candidates
+
+        scored = []
         for _, bid, ball_pos in valid_targets:
-            # 找到最近的2个袋口
-            pocket_dists = [(i, np.linalg.norm(ball_pos - p)) 
-                           for i, p in enumerate(pocket_positions)]
+            pocket_dists = [(i, np.linalg.norm(ball_pos - p)) for i, p in enumerate(pocket_positions)]
             pocket_dists.sort(key=lambda x: x[1])
             nearest_pockets = pocket_dists[:self.max_pockets_per_ball]
-            
             for pocket_idx, _ in nearest_pockets:
                 pocket_pos = pocket_positions[pocket_idx]
-                
-                # 计算 Ghost Ball
                 ball_to_pocket = pocket_pos - ball_pos
                 dist_to_pocket = np.linalg.norm(ball_to_pocket)
                 if dist_to_pocket < 1e-3:
                     continue
-                
-                ball_to_pocket_unit = ball_to_pocket / dist_to_pocket
-                ghost_pos = ball_pos - ball_to_pocket_unit * (2 * self.BALL_RADIUS)
-                
-                # 快速路径检查（简化版）
+                u_bp = ball_to_pocket / dist_to_pocket
+                ghost_pos = ball_pos - u_bp * (2 * self.BALL_RADIUS)
+
+                # 路径检查（cue->ghost 必须通畅；ball->pocket 允许轻微遮挡，给予惩罚）
                 if self._is_path_blocked_fast(cue_pos, ghost_pos, balls, bid):
                     continue
-                
-                # 计算角度
+                pocket_blocked = self._is_path_blocked_fast(ball_pos, pocket_pos, balls, bid)
+
+                cue_to_ball = ball_pos - cue_pos
+                dist_cb = np.linalg.norm(cue_to_ball)
+                if dist_cb < 1e-3:
+                    continue
+                u_cb = cue_to_ball / dist_cb
+                align = float(np.clip(np.dot(u_cb, u_bp), -1.0, 1.0))
+                if align <= 0.15:
+                    continue
+
                 cue_to_ghost = ghost_pos - cue_pos
                 dist_to_ghost = np.linalg.norm(cue_to_ghost)
                 if dist_to_ghost < 1e-3:
                     continue
-                
-                phi = math.degrees(math.atan2(cue_to_ghost[1], cue_to_ghost[0])) % 360
-                
-                # 计算基础速度
+
+                # 解析难度分：切角+距离
+                dist_score = 1.0 / (1.0 + 0.7 * dist_to_ghost + 0.5 * dist_to_pocket)
+                score = (align ** 1.5) * dist_score
+                if pocket_blocked:
+                    score *= 0.45
                 base_speed = self._calculate_optimal_speed(dist_to_ghost, dist_to_pocket)
-                
-                # 速度变体：2个
-                speed_variants = [base_speed * 0.9, base_speed * 1.1]
-                
-                # 旋转变体：3个（减少到最有效的）
-                spin_variants = [
-                    (0.0, 0.0),      # 无旋转
-                    (0.0, -0.15),    # 低杆（拉杆）
-                    (0.0, 0.15),     # 高杆（跟进）
-                ]
-                
-                for speed in speed_variants:
-                    for spin_a, spin_b in spin_variants:
-                        candidates.append({
-                            'V0': float(np.clip(speed, 0.5, 8.0)),
-                            'phi': float(phi),
-                            'theta': 2.0,
-                            'a': float(spin_a),
-                            'b': float(spin_b)
-                        })
+                phi = math.degrees(math.atan2(cue_to_ghost[1], cue_to_ghost[0])) % 360
+                scored.append((score, bid, pocket_pos, ghost_pos, base_speed, phi))
+
+        if not scored:
+            direct_hits = self._generate_contact_fallback_candidates(balls, table, player_targets, max_targets=2)
+            candidates.extend(direct_hits)
+            return candidates
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        base_candidates = scored[: self.max_ghost_candidates]
+
+        # 速度变体（围绕 base_speed）
+        speed_factors = [1.0]
+        if self.max_speed_variants >= 2:
+            speed_factors.append(0.9)
+        if self.max_speed_variants >= 3:
+            speed_factors.append(1.1)
+
+        spin_variants = [
+            (0.0, 0.0),      # 无旋转
+            (0.0, -0.15),    # 低杆（拉杆）
+            (0.0, 0.15),     # 高杆（跟进）
+        ]
+
+        for _, _, _, _, base_speed, phi in base_candidates:
+            for factor in speed_factors:
+                speed = base_speed * factor
+                for spin_a, spin_b in spin_variants[: self.max_spin_variants]:
+                    candidates.append({
+                        'V0': float(np.clip(speed, 0.5, 8.0)),
+                        'phi': float(phi),
+                        'theta': 2.0,
+                        'a': float(spin_a),
+                        'b': float(spin_b)
+                    })
 
         # 兜底：加入“直接撞击最近目标球”的候选，避免路径检查过严导致无解
         direct_hits = self._generate_contact_fallback_candidates(balls, table, player_targets, max_targets=2)
         candidates.extend(direct_hits)
-        
+
         # 限制总候选数
-        if len(candidates) > self.max_ghost_candidates:
-            # 随机采样保持多样性
-            indices = np.random.choice(len(candidates), self.max_ghost_candidates, replace=False)
-            candidates = [candidates[i] for i in indices]
+        max_actions = max(20, self.max_ghost_candidates * self.max_speed_variants)
+        if len(candidates) > max_actions:
+            candidates = candidates[:max_actions]
         
         return candidates
 
@@ -774,6 +795,85 @@ class OptimizedNewAgent(Agent):
             }
         return mean_score
 
+    def _evaluate_positional_candidate(self, action, balls, table, last_state, targets):
+        """用于走位/诱导的快速评估：强调对手 SDI，避免非法斯诺克。"""
+        action = self._sanitize_action(action)
+        if action is None:
+            return -500.0, {"catastrophic": 1, "no_hit": 1, "foul_first_hit": 1}
+
+        sim_balls = {bid: copy.deepcopy(ball) for bid, ball in balls.items()}
+        sim_table = table
+        cue = pt.Cue(cue_ball_id="cue")
+        shot = pt.System(table=sim_table, balls=sim_balls, cue=cue)
+
+        noise = None
+        if self._noise_bank:
+            noise = self._noise_bank[0]
+        noisy = self._sample_noisy_params(
+            action['V0'], action['phi'], action['theta'],
+            action['a'], action['b'], noise=noise
+        )
+        if self._is_degenerate_params(noisy):
+            return -500.0, {"catastrophic": 1, "no_hit": 1, "foul_first_hit": 1}
+
+        shot.cue.set_state(**noisy)
+        try:
+            pt.simulate(shot, inplace=True)
+        except Exception:
+            return -500.0, {"catastrophic": 1, "no_hit": 1, "foul_first_hit": 1}
+
+        base_score = analyze_shot_for_reward(shot, last_state, targets)
+        foul_info = self._analyze_fouls(shot, last_state, targets)
+
+        rollback_foul = (
+            foul_info["CUE_POCKETED"]
+            or foul_info["FOUL_FIRST_HIT"]
+            or foul_info["FOUL_NO_RAIL"]
+            or foul_info["NO_HIT"]
+        )
+        if foul_info["WHITE_AND_EIGHT"] or foul_info["ILLEGAL_EIGHT"]:
+            return -self.catastrophic_foul_penalty, {
+                "catastrophic": 1,
+                "no_hit": int(foul_info["NO_HIT"]),
+                "foul_first_hit": int(foul_info["FOUL_FIRST_HIT"]),
+            }
+        if rollback_foul:
+            penalty = 0.0
+            if foul_info["CUE_POCKETED"]:
+                penalty -= self.scratch_extra_penalty
+            if foul_info["FOUL_FIRST_HIT"]:
+                penalty -= self.first_hit_extra_penalty
+            if foul_info["FOUL_NO_RAIL"]:
+                penalty -= self.no_rail_extra_penalty
+            if foul_info["NO_HIT"]:
+                penalty -= self.no_hit_extra_penalty
+            return penalty, {
+                "catastrophic": 0,
+                "no_hit": int(foul_info["NO_HIT"]),
+                "foul_first_hit": int(foul_info["FOUL_FIRST_HIT"]),
+            }
+
+        bonus = self._calculate_strategic_bonus(shot, table, targets, last_state)
+
+        # 走位/诱导：只在未进球时强化 SDI
+        pocketed_own = [
+            bid for bid, b in shot.balls.items()
+            if bid in last_state and b.state.s == 4 and last_state[bid].state.s != 4 and bid in targets
+        ]
+        if not pocketed_own:
+            sdi_score, has_legal = self._estimate_opponent_sdi(shot, table)
+            if not has_legal:
+                bonus -= self.snooker_penalty_positional
+            else:
+                extra = max(0.0, self.opponent_sdi_weight_positional - self.opponent_sdi_weight)
+                bonus += extra * sdi_score
+
+        return base_score + bonus, {
+            "catastrophic": 0,
+            "no_hit": 0,
+            "foul_first_hit": 0,
+        }
+
     def _analyze_fouls(self, shot, last_state, targets):
         """快速检测本杆是否触发关键犯规（尽量对齐 PoolEnv 规则）"""
         new_pocketed = [
@@ -914,8 +1014,11 @@ class OptimizedNewAgent(Agent):
         if not pocketed_own:
             opponent_threat = self._estimate_opponent_pot_threat(shot, table)
             bonus -= self.opponent_pot_threat_weight * opponent_threat
-            visibility = self._estimate_opponent_visibility(shot)
-            bonus += self.snooker_bonus_weight * (1.0 - visibility)
+            sdi_score, has_legal = self._estimate_opponent_sdi(shot, table)
+            if not has_legal:
+                bonus -= self.snooker_penalty
+            else:
+                bonus += self.opponent_sdi_weight * sdi_score
         else:
             bonus += 12.0 * len(pocketed_own)
             bonus -= 8.0 * len(pocketed_enemy)
@@ -1005,6 +1108,75 @@ class OptimizedNewAgent(Agent):
             if not self._is_path_blocked_fast(cue_pos, ball_pos, shot.balls, ignore_id=eid):
                 visible += 1
         return float(visible / max(1, len(enemy_infos)))
+
+    def _estimate_opponent_sdi(self, shot, table):
+        """估计对手最容易球的难度（SDI，0~1，越高越难）。"""
+        cue = shot.balls.get("cue")
+        if cue is None or cue.state.s == 4:
+            return 0.0, False
+        cue_pos = np.array(cue.state.rvw[0][:2], dtype=float)
+
+        enemy_ids = self._enemy_target_ids()
+        pocket_positions = [np.array(p.center[:2], dtype=float) for p in table.pockets.values()]
+
+        enemy_infos = []
+        for eid in enemy_ids:
+            ball = shot.balls.get(eid)
+            if ball is None or ball.state.s == 4:
+                continue
+            ball_pos = np.array(ball.state.rvw[0][:2], dtype=float)
+            enemy_infos.append((float(np.linalg.norm(ball_pos - cue_pos)), eid, ball_pos))
+        if not enemy_infos:
+            return 0.0, False
+        enemy_infos.sort(key=lambda x: x[0])
+        enemy_infos = enemy_infos[:3]
+
+        best_raw = None
+        for d_cb, eid, ball_pos in enemy_infos:
+            if self._is_path_blocked_fast(cue_pos, ball_pos, shot.balls, ignore_id=eid):
+                continue
+            cue_to_ball = ball_pos - cue_pos
+            if d_cb < 1e-3:
+                continue
+            u_cb = cue_to_ball / d_cb
+
+            pocket_dists = [(float(np.linalg.norm(ball_pos - ppos)), ppos) for ppos in pocket_positions]
+            pocket_dists.sort(key=lambda x: x[0])
+            for d_bp, ppos in pocket_dists[:2]:
+                ball_to_pocket = ppos - ball_pos
+                if d_bp < 1e-3:
+                    continue
+                u_bp = ball_to_pocket / d_bp
+
+                if self._is_path_blocked_fast(ball_pos, ppos, shot.balls, ignore_id=eid):
+                    continue
+
+                align = float(np.clip(np.dot(u_cb, u_bp), -1.0, 1.0))
+                if align <= 0.05:
+                    continue
+
+                # 基础难度：距离与切角
+                raw = (d_cb * d_bp) / max(0.1, align)
+
+                # 贴库加难度
+                rail_factor = 1.0
+                if min(cue_pos[0], cue_pos[1], table.l - cue_pos[0], table.w - cue_pos[1]) < 0.05:
+                    rail_factor *= 1.2
+                if min(ball_pos[0], ball_pos[1], table.l - ball_pos[0], table.w - ball_pos[1]) < 0.05:
+                    rail_factor *= 1.2
+                if align < 0.5:
+                    rail_factor *= 1.15
+                raw *= rail_factor
+
+                if best_raw is None or raw < best_raw:
+                    best_raw = raw
+
+        if best_raw is None:
+            return 0.0, False
+
+        # 归一化到 0~1，raw 越大越难
+        sdi_score = float(best_raw / (best_raw + 1.2))
+        return sdi_score, True
     
     # ========== CMA-ES 快速优化 ==========
     
@@ -1098,9 +1270,12 @@ class OptimizedNewAgent(Agent):
             pos = np.array(ball.state.rvw[0][:2], dtype=float)
             target_infos.append((float(np.linalg.norm(pos - cue_pos)), bid, pos))
         target_infos.sort(key=lambda x: x[0])
-        target_infos = target_infos[: self.positional_max_targets]
-
+        if len(target_infos) > self.positional_max_targets:
+            near = target_infos[: self.positional_max_targets]
+            far = target_infos[-1:]
+            target_infos = near + far
         angle_offsets = self.positional_angle_offsets
+        wide_offsets = self.positional_angle_offsets_wide
         speeds = self.positional_speeds
         spin_variants = self.positional_spin_variants
         for dist, _, pos in target_infos:
@@ -1120,6 +1295,26 @@ class OptimizedNewAgent(Agent):
                             "a": float(a),
                             "b": float(b),
                         })
+                # 更宽的薄切角（诱导难度）
+                for off in wide_offsets:
+                    candidates.append({
+                        "V0": tuned_v0,
+                        "phi": float((base_phi + off) % 360),
+                        "theta": 2.0,
+                        "a": 0.0,
+                        "b": 0.0,
+                    })
+            # 轻度随机偏移，制造更多落点多样性
+            for _ in range(self.positional_random_offsets):
+                off = float(self._rng.uniform(-18.0, 18.0))
+                v0 = float(self._rng.uniform(1.6, 3.0))
+                candidates.append({
+                    "V0": v0,
+                    "phi": float((base_phi + off) % 360),
+                    "theta": 2.0,
+                    "a": 0.0,
+                    "b": 0.0,
+                })
 
         # 2) 少量随机角度补充（极端拥挤/无明显目标时兜底）
         for angle in np.linspace(0, 360, self.positional_random_angles, endpoint=False):
@@ -1138,9 +1333,8 @@ class OptimizedNewAgent(Agent):
         for candidate in candidates:
             if self._is_degenerate_params(candidate):
                 continue
-            score, st = self._evaluate_action_fast(
-                candidate, balls, table, last_state, targets,
-                self.safety_samples, return_stats=True
+            score, st = self._evaluate_positional_candidate(
+                candidate, balls, table, last_state, targets
             )
             # 安全球：硬过滤（避免把“安全”打成直接判负/回滚送机会）
             if st.get("catastrophic", 0) > 0:
@@ -1160,9 +1354,8 @@ class OptimizedNewAgent(Agent):
         if best_action is None:
             fallback = self._generate_contact_fallback_candidates(balls, table, targets, max_targets=2)
             for cand in fallback:
-                score, st = self._evaluate_action_fast(
-                    cand, balls, table, last_state, targets,
-                    max(1, self.safety_samples), return_stats=True
+                score, st = self._evaluate_positional_candidate(
+                    cand, balls, table, last_state, targets
                 )
                 if st.get("catastrophic", 0) > 0 or st.get("no_hit", 0) > 0 or st.get("foul_first_hit", 0) > 0:
                     continue
