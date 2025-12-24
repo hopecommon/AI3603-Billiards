@@ -11,7 +11,7 @@ evaluate.py - Agent 评估脚本
 2. 调整 n_games 设置对战局数（评分时设置为120局来计算胜率）
 3. 运行脚本查看结果
 
-uv run python -u evaluate.py --games 20 --logdir logs 2>&1 | tee debug.log
+uv run python -u evaluate_pro.py --games 20 --logdir logs 2>&1 | tee debug_pro.log
 """
 
 import math
@@ -28,7 +28,8 @@ import time
 # 导入必要的模块
 from utils import set_random_seed
 from poolenv import PoolEnv
-from agent import BasicAgent, NewAgent       
+from agent import BasicAgent, NewAgent
+from basic_agent_pro import BasicAgentPro
 # from agent_optimized import OptimizedNewAgent  # 使用优化版
 from agent_hcf import OptimizedNewAgent  # 使用优化版
 
@@ -36,8 +37,8 @@ from agent_hcf import OptimizedNewAgent  # 使用优化版
 # 根据需求，我们在这里统一设置随机种子，确保 agent 双方的全局击球扰动使用相同的随机状态
 set_random_seed(enable=True, seed=42)
 
-parser = argparse.ArgumentParser(description="Evaluate BasicAgent vs NewAgent")
-parser.add_argument("--games", type=int, default=120, help="对战局数（默认40，与评分一致）")
+parser = argparse.ArgumentParser(description="Evaluate BasicAgentPro vs NewAgent")
+parser.add_argument("--games", type=int, default=120, help="对战局数（默认120，与评分一致）")
 parser.add_argument("--logdir", default="logs", help="日志目录（默认为 logs/，传空字符串即可禁用）")
 args = parser.parse_args()
 
@@ -56,7 +57,7 @@ foul_stats = {
     'no_hit_foul': 0
 }
 
-agent_a = BasicAgent()
+agent_a = BasicAgentPro()
 # agent_b = NewAgent()
 agent_b = OptimizedNewAgent()
 
