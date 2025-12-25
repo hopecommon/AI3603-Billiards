@@ -1078,6 +1078,7 @@ class OptimizedNewAgent(Agent):
                     'popsize': self.cma_population_size,
                     'maxiter': self.cma_generations,
                     'verbose': -9,
+                    'verb_filenameprefix': '',  # 禁用文件输出
                     'seed': np.random.randint(1e6),
                     'tolx': 1e-3,  # 添加收敛阈值，提前停止
                     'tolfun': 1e-2  # 函数值变化阈值
