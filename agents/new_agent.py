@@ -157,9 +157,9 @@ class OptimizedNewAgent(Agent):
         self.samples_critical = 6          # 关键球（黑8）：6次采样（从8→6）
         
         # 2. Ghost Ball 智能剪枝
-        self.max_ghost_candidates = 12     # 稍增候选，提高对强敌的进攻稳定性
-        self.max_pockets_per_ball = 3      # 每个球尝试更多袋口
-        self.max_speed_variants = 3        # 速度变体：3个
+        self.max_ghost_candidates = 8      # 再减少候选，降低慢模拟概率
+        self.max_pockets_per_ball = 2      # 每个球只尝试最近2个袋口
+        self.max_speed_variants = 2        # 速度变体：2个
         self.max_spin_variants = 3         # 旋转变体：3个
         
         # 3. CMA-ES 优化
@@ -214,10 +214,9 @@ class OptimizedNewAgent(Agent):
         self.black_pocket_danger_dist = 0.14      # 黑8离袋口过近时，提升验证/更偏向安全（米）
         self.black_risk_extra_verifies = 2        # 黑8高风险局面额外验证次数（降低随机漏检）
         # 不好进攻时的“走位杆”参数（替代随机安全球）
-        self.positional_trigger_score = 25.0      # 进攻分低于此时考虑走位杆
-        self.positional_prefer_margin = 10.0      # 走位杆超过进攻多少才选
-        self.opponent_pot_threat_weight = 30.0    # 走位杆核心：降低对手下一杆轻松进球概率（轻量近似）
-        self.snooker_bonus_weight = 25.0          # 走位杆奖励：隐藏白球，降低对手视线
+        self.positional_trigger_score = 35.0      # 进攻分低于此时考虑走位杆
+        self.positional_prefer_margin = 6.0       # 走位杆超过进攻多少才选
+        self.opponent_pot_threat_weight = 35.0    # 走位杆核心：降低对手下一杆轻松进球概率（轻量近似）
 
         # 走位杆候选规模（控制耗时；走位杆只需要“够用”，不需要大搜索）
         self.positional_max_targets = 1
@@ -226,17 +225,6 @@ class OptimizedNewAgent(Agent):
         self.positional_spin_variants = ((0.0, 0.0), (0.0, 0.10))
         self.positional_random_angles = 3
         self.positional_early_stop_score = 32.0
-
-        # 噪声采样：使用局部 RNG + 共同随机数降低方差
-        self.noise_std = {
-            "V0": 0.1,
-            "phi": 0.1,
-            "theta": 0.1,
-            "a": 0.003,
-            "b": 0.003,
-        }
-        self._rng = np.random.default_rng()
-        self._noise_bank = None
         
         self.my_target_type = None
         
@@ -272,15 +260,6 @@ class OptimizedNewAgent(Agent):
             dangerous_black = self._black8_is_dangerous(balls, table, prepared_targets)
             if dangerous_black and not is_critical:
                 print("[OptimizedAgent] 检测到黑8高风险位置：提高验证强度并更保守选择")
-
-            max_samples = max(
-                self.samples_quick_filter,
-                self.samples_normal_eval,
-                self.samples_critical,
-                self.samples_final_verify + self.black_risk_extra_verifies,
-                self.safety_samples,
-            )
-            self._noise_bank = self._build_noise_bank(max_samples)
             
             # ========== 优化后的决策流程 ==========
             
@@ -360,8 +339,8 @@ class OptimizedNewAgent(Agent):
                     candidate, balls, table, last_state_snapshot,
                     prepared_targets, samples, return_stats=True
                 )
-                # 精评阶段：非关键球严格剔除“即时判负”候选；关键球保留分数（让评分体现风险）
-                if stats["catastrophic"] > 0 and not is_critical:
+                # 精评阶段：一旦出现“即时判负”样本，直接剔除该候选，降低漏检概率
+                if stats["catastrophic"] > 0:
                     refined_scores.append((-1e9, candidate))
                 else:
                     refined_scores.append((score, candidate))
@@ -533,7 +512,6 @@ class OptimizedNewAgent(Agent):
             return self._conservative_action(balls, table)
         
         finally:
-            self._noise_bank = None
             signal.alarm(0)
             signal.signal(signal.SIGALRM, prev_handler)
     
@@ -725,7 +703,7 @@ class OptimizedNewAgent(Agent):
     
     # ========== 快速评估函数 ==========
     
-    def _evaluate_action_fast(self, action, balls, table, last_state, targets, samples, return_stats=False, noise_samples=None):
+    def _evaluate_action_fast(self, action, balls, table, last_state, targets, samples, return_stats=False):
         """快速评估（使用分层采样）
 
         关键：对 PoolEnv 的“即时判负”规则做硬风控（非法黑8、白球+黑8）。
@@ -744,7 +722,7 @@ class OptimizedNewAgent(Agent):
             }
             return (-500.0, empty) if return_stats else -500.0
         return self._evaluate_action_fast_impl(
-            action, balls, table, last_state, targets, samples, return_stats=return_stats, noise_samples=noise_samples
+            action, balls, table, last_state, targets, samples, return_stats=return_stats
         )
 
     def _sanitize_action(self, action):
@@ -771,7 +749,7 @@ class OptimizedNewAgent(Agent):
         b = float(np.clip(b, -0.5, 0.5))
         return {"V0": V0, "phi": phi, "theta": theta, "a": a, "b": b}
 
-    def _evaluate_action_fast_impl(self, action, balls, table, last_state, targets, samples, return_stats, noise_samples=None):
+    def _evaluate_action_fast_impl(self, action, balls, table, last_state, targets, samples, return_stats):
         scores = []
         catastrophic = 0
         scratch = 0
@@ -800,14 +778,9 @@ class OptimizedNewAgent(Agent):
             cue = pt.Cue(cue_ball_id="cue")
             shot = pt.System(table=sim_table, balls=sim_balls, cue=cue)
             
-            noise = None
-            if noise_samples is None and self._noise_bank is not None:
-                noise_samples = self._noise_bank
-            if noise_samples is not None and len(noise_samples) > 0:
-                noise = noise_samples[min(len(noise_samples) - 1, len(scores))]
             noisy = self._sample_noisy_params(
                 action['V0'], action['phi'], action['theta'],
-                action['a'], action['b'], noise=noise
+                action['a'], action['b']
             )
             
             if self._is_degenerate_params(noisy):
@@ -822,39 +795,33 @@ class OptimizedNewAgent(Agent):
             
             # 使用原有的奖励函数
             base_score = analyze_shot_for_reward(shot, last_state, targets)
+            
+            # 添加走位和防守奖励
+            bonus = self._calculate_strategic_bonus(shot, table, targets, last_state)
             foul_info = self._analyze_fouls(shot, last_state, targets)
+            sample_score = base_score + bonus
 
-            # 规则对齐：犯规回滚意味着布局收益无效
-            rollback_foul = (
-                foul_info["CUE_POCKETED"]
-                or foul_info["FOUL_FIRST_HIT"]
-                or foul_info["FOUL_NO_RAIL"]
-                or foul_info["NO_HIT"]
-            )
+            # 即时判负：必须极重惩罚（否则会被 +50/球 等奖励掩盖）
             if foul_info["WHITE_AND_EIGHT"] or foul_info["ILLEGAL_EIGHT"]:
                 catastrophic += 1
                 if foul_info["WHITE_AND_EIGHT"]:
                     white_and_eight += 1
                 if foul_info["ILLEGAL_EIGHT"]:
                     illegal_eight += 1
-                sample_score = -self.catastrophic_foul_penalty
-            elif rollback_foul:
-                sample_score = 0.0
-                if foul_info["CUE_POCKETED"]:
-                    scratch += 1
-                    sample_score -= self.scratch_extra_penalty
-                if foul_info["FOUL_FIRST_HIT"]:
-                    foul_first_hit += 1
-                    sample_score -= self.first_hit_extra_penalty
-                if foul_info["FOUL_NO_RAIL"]:
-                    foul_no_rail += 1
-                    sample_score -= self.no_rail_extra_penalty
-                if foul_info["NO_HIT"]:
-                    no_hit += 1
-                    sample_score -= self.no_hit_extra_penalty
-            else:
-                bonus = self._calculate_strategic_bonus(shot, table, targets, last_state)
-                sample_score = base_score + bonus
+                sample_score -= self.catastrophic_foul_penalty
+            elif foul_info["CUE_POCKETED"]:
+                scratch += 1
+                sample_score -= self.scratch_extra_penalty
+
+            if foul_info["FOUL_FIRST_HIT"]:
+                foul_first_hit += 1
+                sample_score -= self.first_hit_extra_penalty
+            if foul_info["FOUL_NO_RAIL"]:
+                foul_no_rail += 1
+                sample_score -= self.no_rail_extra_penalty
+            if foul_info["NO_HIT"]:
+                no_hit += 1
+                sample_score -= self.no_hit_extra_penalty
 
             scores.append(sample_score)
         
@@ -978,10 +945,6 @@ class OptimizedNewAgent(Agent):
             bid for bid, b in shot.balls.items()
             if bid in last_state and b.state.s == 4 and last_state[bid].state.s != 4 and bid in targets
         ]
-        pocketed_enemy = [
-            bid for bid, b in shot.balls.items()
-            if bid in last_state and b.state.s == 4 and last_state[bid].state.s != 4 and bid not in targets and bid not in ("cue", "8")
-        ]
 
         # 白球远离袋口（降低白球/白+8风险）
         min_pocket_dist = float("inf")
@@ -1012,11 +975,6 @@ class OptimizedNewAgent(Agent):
         if not pocketed_own:
             opponent_threat = self._estimate_opponent_pot_threat(shot, table)
             bonus -= self.opponent_pot_threat_weight * opponent_threat
-            visibility = self._estimate_opponent_visibility(shot)
-            bonus += self.snooker_bonus_weight * (1.0 - visibility)
-        else:
-            bonus += 12.0 * len(pocketed_own)
-            bonus -= 8.0 * len(pocketed_enemy)
 
         return float(bonus)
 
@@ -1065,44 +1023,13 @@ class OptimizedNewAgent(Agent):
                 if d_bp < 1e-3:
                     continue
                 u_bp = ball_to_pocket / d_bp
-                ghost_pos = ball_pos - u_bp * (2.0 * self.BALL_RADIUS)
-                if self._is_path_blocked_fast(cue_pos, ghost_pos, shot.balls, ignore_id=eid):
-                    continue
-                if self._is_path_blocked_fast(ball_pos, ppos, shot.balls, ignore_id=eid):
-                    continue
                 align = float(np.clip(np.dot(u_cb, u_bp), -1.0, 1.0))
-                if align <= 0.20:
+                if align <= 0.25:
                     continue
                 dist_factor = 1.0 / (1.0 + 0.8 * d_cb + 0.6 * d_bp)
                 best = max(best, align * dist_factor)
 
         return float(np.clip(best * 6.0, 0.0, 1.0))
-
-    def _estimate_opponent_visibility(self, shot):
-        """估计对手是否能直线看到球（0~1，越高越容易出杆）。"""
-        cue = shot.balls.get("cue")
-        if cue is None or cue.state.s == 4:
-            return 0.0
-        cue_pos = np.array(cue.state.rvw[0][:2], dtype=float)
-
-        enemy_ids = self._enemy_target_ids()
-        enemy_infos = []
-        for eid in enemy_ids:
-            ball = shot.balls.get(eid)
-            if ball is None or ball.state.s == 4:
-                continue
-            ball_pos = np.array(ball.state.rvw[0][:2], dtype=float)
-            enemy_infos.append((float(np.linalg.norm(ball_pos - cue_pos)), eid, ball_pos))
-        if not enemy_infos:
-            return 0.0
-        enemy_infos.sort(key=lambda x: x[0])
-        enemy_infos = enemy_infos[:3]
-
-        visible = 0
-        for _, eid, ball_pos in enemy_infos:
-            if not self._is_path_blocked_fast(cue_pos, ball_pos, shot.balls, ignore_id=eid):
-                visible += 1
-        return float(visible / max(1, len(enemy_infos)))
     
     # ========== CMA-ES 快速优化 ==========
     
@@ -1301,40 +1228,15 @@ class OptimizedNewAgent(Agent):
             return self.SOLID_IDS
         return self.SOLID_IDS + self.STRIPE_IDS
     
-    def _sample_noisy_params(self, V0, phi, theta, a, b, noise=None):
-        """采样噪声参数（可使用共同随机数降低方差）"""
-        if noise is None:
-            noise = (
-                float(self._rng.normal(0, self.noise_std["V0"])),
-                float(self._rng.normal(0, self.noise_std["phi"])),
-                float(self._rng.normal(0, self.noise_std["theta"])),
-                float(self._rng.normal(0, self.noise_std["a"])),
-                float(self._rng.normal(0, self.noise_std["b"])),
-            )
-        V0 = float(V0 + noise[0])
-        phi = float(phi + noise[1])
-        theta = float(theta + noise[2])
-        a = float(a + noise[3])
-        b = float(b + noise[4])
-        V0 = float(np.clip(V0, 0.5, 8.0))
-        phi = float(phi % 360.0)
-        theta = float(np.clip(theta, 0.0, 90.0))
-        a = float(np.clip(a, -0.5, 0.5))
-        b = float(np.clip(b, -0.5, 0.5))
-        return {'V0': V0, 'phi': phi, 'theta': theta, 'a': a, 'b': b}
-
-    def _build_noise_bank(self, samples):
-        """构造共同随机数样本（每次决策共享）"""
-        bank = []
-        for _ in range(samples):
-            bank.append((
-                float(self._rng.normal(0, self.noise_std["V0"])),
-                float(self._rng.normal(0, self.noise_std["phi"])),
-                float(self._rng.normal(0, self.noise_std["theta"])),
-                float(self._rng.normal(0, self.noise_std["a"])),
-                float(self._rng.normal(0, self.noise_std["b"])),
-            ))
-        return bank
+    def _sample_noisy_params(self, V0, phi, theta, a, b):
+        """采样噪声参数"""
+        return {
+            'V0': float(V0 + np.random.normal(0, 0.1)),
+            'phi': float(phi + np.random.normal(0, 0.1)),
+            'theta': float(theta + np.random.normal(0, 0.1)),
+            'a': float(a + np.random.normal(0, 0.003)),
+            'b': float(b + np.random.normal(0, 0.003))
+        }
     
     def _is_degenerate_params(self, params):
         """检查参数是否退化"""
