@@ -3,7 +3,7 @@ import re
 import statistics
 
 # 读取日志
-with open('debug1.log', 'r') as f:
+with open('debug.log', 'r') as f:
     lines = f.readlines()
 
 games = []
