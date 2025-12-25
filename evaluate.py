@@ -27,7 +27,7 @@ set_random_seed(enable=False, seed=42)
 env = PoolEnv()
 results = {'AGENT_A_WIN': 0, 'AGENT_B_WIN': 0, 'SAME': 0}
 game_durations = []  # 记录每局耗时
-n_games = 20
+n_games = 120
 
 ## 选择对打的对手
 agent_a, agent_b = BasicAgentPro(), NewAgent() # 与 BasicAgent 对打
