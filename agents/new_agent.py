@@ -13,6 +13,7 @@ import signal
 from bayes_opt import BayesianOptimization, SequentialDomainReductionTransformer
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import Matern
+import cma  # CMA-ES优化器
 
 from .agent import Agent
 
@@ -186,7 +187,7 @@ class Agent():
         return action
 
 class NewAgent(Agent):
-    """Enhanced MCTS Agent - 全面优化版本"""
+    """CMA-ES Sniper - 狙击手优化版"""
     
     def __init__(self,
                  n_simulations=50,
@@ -200,6 +201,12 @@ class NewAgent(Agent):
             'V0': 0.1, 'phi': 0.15, 'theta': 0.1, 'a': 0.005, 'b': 0.005
         }
         
+        # CMA-ES 配置
+        self.use_cmaes_sniper = True      # 启用CMA-ES狙击模式
+        self.cmaes_max_eval = 20          # CMA-ES最大评估次数（从30降到20）
+        self.geometric_top_k = 3          # 几何筛选Top-K
+        self.simple_shot_threshold = 5    # 剩余球<5个时用CMA-ES
+        
         # 优化配置
         self.enable_adaptive_sims = True
         self.enable_safety_penalty = True
@@ -207,7 +214,150 @@ class NewAgent(Agent):
         self.black_risk_penalty = 50.0
         self.cue_danger_penalty = 20.0
         
-        print("[NewAgent] Enhanced MCTS V2 已初始化")
+        print("[NewAgent] CMA-ES Sniper Mode - 狙击手优化版已初始化")
+
+    def fast_geometric_filter(self, balls, my_targets, table):
+        """快速几何筛选：找出理论可进的Top-K球（纯numpy，<0.01秒）"""
+        cue_ball = balls.get('cue')
+        if not cue_ball:
+            return []
+        
+        cue_pos = np.array(cue_ball.state.rvw[0][:2])
+        target_ids = [bid for bid in my_targets if balls[bid].state.s != 4]
+        
+        if not target_ids:
+            target_ids = ['8']
+        
+        candidates = []
+        
+        for tid in target_ids:
+            obj_pos = np.array(balls[tid].state.rvw[0][:2])
+            
+            for pocket_id, pocket in table.pockets.items():
+                pocket_pos = np.array(pocket.center[:2])
+                
+                # 计算角度
+                vec_obj_to_pocket = pocket_pos - obj_pos
+                vec_cue_to_obj = obj_pos - cue_pos
+                
+                dist_obj_to_pocket = np.linalg.norm(vec_obj_to_pocket)
+                dist_cue_to_obj = np.linalg.norm(vec_cue_to_obj)
+                
+                if dist_obj_to_pocket < 0.01 or dist_cue_to_obj < 0.01:
+                    continue
+                
+                # 计算进球角度
+                angle_rad = np.arccos(np.clip(
+                    np.dot(-vec_cue_to_obj, vec_obj_to_pocket) / 
+                    (dist_cue_to_obj * dist_obj_to_pocket), -1, 1
+                ))
+                angle_deg = np.degrees(angle_rad)
+                
+                # 筛选条件：角度<80度，距离合理
+                if angle_deg < 80 and dist_cue_to_obj < 3.0:
+                    # 精确遮挡检测：只检查白球到目标球之间的路径
+                    is_blocked = False
+                    for other_id, other_ball in balls.items():
+                        if other_id in [tid, 'cue'] or other_ball.state.s == 4:
+                            continue
+                        other_pos = np.array(other_ball.state.rvw[0][:2])
+                        
+                        # 计算other_pos在击球路径上的投影
+                        vec_cue_to_other = other_pos - cue_pos
+                        projection_length = np.dot(vec_cue_to_other, vec_cue_to_obj) / dist_cue_to_obj
+                        
+                        # 只有当投影在[0, dist_cue_to_obj]范围内，才可能遮挡
+                        if 0 < projection_length < dist_cue_to_obj:
+                            # 计算垂直距离
+                            dist_to_line = np.abs(np.cross(vec_cue_to_obj, cue_pos - other_pos)) / dist_cue_to_obj
+                            if dist_to_line < self.ball_radius * 2.5:
+                                is_blocked = True
+                                break
+                    
+                    if not is_blocked:
+                        # 评分：角度越小、距离越近越好
+                        score = 100 - angle_deg - dist_cue_to_obj * 5
+                        candidates.append({
+                            'target_id': tid,
+                            'pocket_id': pocket_id,
+                            'score': score,
+                            'angle': angle_deg,
+                            'distance': dist_cue_to_obj
+                        })
+        
+        # 按得分排序，返回Top-K
+        candidates.sort(key=lambda x: x['score'], reverse=True)
+        return candidates[:self.geometric_top_k]
+
+    def cmaes_optimize_shot(self, balls, table, target_id, pocket_id, my_targets):
+        """CMA-ES优化单个击球：找到鲁棒性最大的参数"""
+        cue_pos = balls['cue'].state.rvw[0]
+        obj_pos = balls[target_id].state.rvw[0]
+        pocket_pos = table.pockets[pocket_id].center
+        
+        # 初始猜测
+        phi_init, dist = self._get_ghost_ball_target(cue_pos, obj_pos, pocket_pos)
+        v0_init = np.clip(1.5 + dist * 1.5, 1.0, 6.0)
+        
+        # CMA-ES初始参数 [V0, phi]
+        x0 = np.array([v0_init, phi_init])
+        sigma0 = 0.5  # 初始步长
+        
+        # 定义目标函数（负数，因为CMA-ES最小化）
+        def objective(x):
+            v0, phi = x
+            # 边界约束
+            if v0 < 0.5 or v0 > 8.0 or phi < 0 or phi > 360:
+                return 1000.0  # 惩罚越界
+            
+            action = {'V0': v0, 'phi': phi, 'theta': 0, 'a': 0, 'b': 0}
+            
+            # 多样本评估（鲁棒性）- 减少到3次采样以加速
+            rewards = []
+            for _ in range(3):  # 从5次减少到3次
+                shot = self.simulate_action(balls, table, action, my_targets)
+                if shot is None:
+                    rewards.append(-500)
+                else:
+                    reward = analyze_shot_for_reward(shot, balls, my_targets)
+                    reward += self.calc_safety_penalty(shot, table, my_targets)
+                    rewards.append(reward)
+            
+            # 鲁棒性得分 = 均值 - 标准差（惩罚不稳定）
+            mean_reward = np.mean(rewards)
+            std_reward = np.std(rewards)
+            robust_score = mean_reward - 0.5 * std_reward
+            
+            return -robust_score  # 负数，CMA-ES求最小
+        
+        # 运行CMA-ES
+        try:
+            es = cma.CMAEvolutionStrategy(x0, sigma0, {
+                'bounds': [[0.5, 0], [8.0, 360]],
+                'maxfevals': self.cmaes_max_eval,
+                'verbose': -1,  # 静默模式
+                'verb_filenameprefix': ''  # 禁用日志文件输出
+            })
+            es.optimize(objective)
+            best_x = es.result.xbest
+            best_score = -es.result.fbest
+            
+            return {
+                'V0': float(best_x[0]),
+                'phi': float(best_x[1]) % 360,
+                'theta': 0,
+                'a': 0,
+                'b': 0
+            }, best_score
+        except Exception as e:
+            # CMA-ES失败，返回初始猜测
+            return {
+                'V0': v0_init,
+                'phi': phi_init,
+                'theta': 0,
+                'a': 0,
+                'b': 0
+            }, 0.0
 
     def _calc_angle_degrees(self, v):
         angle = math.degrees(math.atan2(v[1], v[0]))
@@ -297,17 +447,14 @@ class NewAgent(Agent):
         return penalty
 
     def simulate_action(self, balls, table, action, my_targets=None):
-        """
-        [修改点1] 执行带噪声的物理仿真
-        让 Agent 意识到由于误差的存在，某些"极限球"是不可打的
-        """
+        """执行带噪声的物理仿真（带超时保护）"""
         sim_balls = {bid: copy.deepcopy(ball) for bid, ball in balls.items()}
         sim_table = copy.deepcopy(table)
         cue = pt.Cue(cue_ball_id="cue")
         shot = pt.System(table=sim_table, balls=sim_balls, cue=cue)
         
         try:
-            # --- 注入高斯噪声 ---
+            # 注入高斯噪声
             noisy_V0 = np.clip(action['V0'] + np.random.normal(0, self.sim_noise['V0']), 0.5, 8.0)
             noisy_phi = (action['phi'] + np.random.normal(0, self.sim_noise['phi'])) % 360
             noisy_theta = np.clip(action['theta'] + np.random.normal(0, self.sim_noise['theta']), 0, 90)
@@ -315,7 +462,12 @@ class NewAgent(Agent):
             noisy_b = np.clip(action['b'] + np.random.normal(0, self.sim_noise['b']), -0.5, 0.5)
 
             cue.set_state(V0=noisy_V0, phi=noisy_phi, theta=noisy_theta, a=noisy_a, b=noisy_b)
-            pt.simulate(shot, inplace=True)
+            
+            # 使用超时保护模拟
+            success = simulate_with_timeout(shot, timeout=3)
+            if not success:
+                return None
+            
             return shot
         except Exception:
             return None
@@ -328,6 +480,32 @@ class NewAgent(Agent):
         if len(remaining) == 0: my_targets = ["8"]
         last_state_snapshot = {bid: copy.deepcopy(ball) for bid, ball in balls.items()}
 
+        # === CMA-ES狙击模式 ===
+        if self.use_cmaes_sniper and len(remaining) <= self.simple_shot_threshold:
+            print(f"[NewAgent] CMA-ES狙击模式 (剩余{len(remaining)}球)")
+            
+            # 快速几何筛选
+            candidates = self.fast_geometric_filter(balls, my_targets, table)
+            
+            if len(candidates) > 0:
+                best_action = None
+                best_score = -float('inf')
+                
+                # 对Top-K候选运行CMA-ES
+                for cand in candidates:
+                    action, score = self.cmaes_optimize_shot(
+                        balls, table, cand['target_id'], cand['pocket_id'], my_targets
+                    )
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_action = action
+                
+                if best_action is not None:
+                    print(f"[NewAgent] CMA-ES最优解: Score={best_score:.1f}, V0={best_action['V0']:.2f}, phi={best_action['phi']:.1f}")
+                    return best_action
+        
+        # === MCTS备用模式 ===
         # 自适应模拟次数
         if self.enable_adaptive_sims:
             if len(remaining) < 3:
@@ -379,7 +557,7 @@ class NewAgent(Agent):
         best_idx = np.argmax(avg_rewards)
         best_action = candidate_actions[best_idx]
         
-        print(f"[NewAgent] Score: {avg_rewards[best_idx]:.3f} (Sims: {n_sims}, Remain: {len(remaining)})")
+        print(f"[NewAgent] MCTS: Score={avg_rewards[best_idx]:.3f}, Sims={n_sims}, Remain={len(remaining)}")
         
         return best_action
 
