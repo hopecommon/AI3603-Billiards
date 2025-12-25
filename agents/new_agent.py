@@ -203,7 +203,7 @@ class NewAgent(Agent):
         
         # CMA-ES 配置
         self.use_cmaes_sniper = True      # 启用CMA-ES狙击模式
-        self.cmaes_max_eval = 20          # CMA-ES最大评估次数（从30降到20）
+        self.cmaes_max_eval = 20          # CMA-ES最大评估次数
         self.geometric_top_k = 3          # 几何筛选Top-K
         self.simple_shot_threshold = 5    # 剩余球<5个时用CMA-ES
         
@@ -464,7 +464,7 @@ class NewAgent(Agent):
             cue.set_state(V0=noisy_V0, phi=noisy_phi, theta=noisy_theta, a=noisy_a, b=noisy_b)
             
             # 使用超时保护模拟
-            success = simulate_with_timeout(shot, timeout=3)
+            success = simulate_with_timeout(shot, timeout=2)
             if not success:
                 return None
             

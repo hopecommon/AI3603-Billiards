@@ -13,6 +13,8 @@ evaluate.py - Agent 评估脚本
 """
 
 # 导入必要的模块
+import time
+import statistics
 from utils import set_random_seed
 from poolenv import PoolEnv
 from agents import BasicAgent, BasicAgentPro, NewAgent
@@ -23,7 +25,8 @@ set_random_seed(enable=False, seed=42)
 
 env = PoolEnv()
 results = {'AGENT_A_WIN': 0, 'AGENT_B_WIN': 0, 'SAME': 0}
-n_games = 40  # 测试阶段：40局（10个完整循环）
+game_durations = []  # 记录每局耗时
+n_games = 20
 
 ## 选择对打的对手
 agent_a, agent_b = BasicAgentPro(), NewAgent() # 与 BasicAgent 对打
@@ -35,6 +38,8 @@ target_ball_choice = ['solid', 'solid', 'stripe', 'stripe']  # 轮换球型
 for i in range(n_games): 
     print()
     print(f"------- 第 {i} 局比赛开始 -------")
+    game_start_time = time.time()  # 记录本局开始时间
+    
     env.reset(target_ball=target_ball_choice[i % 4])
     player_class = players[i % 2].__class__.__name__
     ball_type = target_ball_choice[i % 4]
@@ -70,7 +75,26 @@ for i in range(n_games):
                 results[['AGENT_A_WIN', 'AGENT_B_WIN'][i % 2]] += 1
             else:
                 results[['AGENT_A_WIN', 'AGENT_B_WIN'][(i+1) % 2]] += 1
+            
+            # 记录本局耗时
+            game_duration = time.time() - game_start_time
+            game_durations.append(game_duration)
+            print(f"本局耗时: {game_duration:.2f}秒")
             break
+
+# 时间统计分析（在最终结果之前输出）
+if game_durations:
+    print("\n" + "="*60)
+    print("时间统计分析")
+    print("="*60)
+    print(f"总局数:     {len(game_durations)}")
+    print(f"平均耗时:   {statistics.mean(game_durations):.2f}秒")
+    print(f"中位数:     {statistics.median(game_durations):.2f}秒")
+    print(f"最快:       {min(game_durations):.2f}秒")
+    print(f"最慢:       {max(game_durations):.2f}秒")
+    if len(game_durations) > 1:
+        print(f"标准差:     {statistics.stdev(game_durations):.2f}秒")
+    print("="*60)
 
 # 计算分数：胜1分，负0分，平局0.5
 results['AGENT_A_SCORE'] = results['AGENT_A_WIN'] * 1 + results['SAME'] * 0.5
