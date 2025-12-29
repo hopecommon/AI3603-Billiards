@@ -205,3 +205,21 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+# Latex
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.out
+*.log
+*.synctex.gz
+
+# Paper build output (keep figure PDFs/PNGs)
+paper/main.pdf
+
+# Paper experiment artifacts (keep aggregated summary + generated tables/macros)
+paper/results_smoke/
+paper/results/**/games.jsonl

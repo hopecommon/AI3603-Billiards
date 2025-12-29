@@ -1,0 +1,68 @@
+{
+  "name": "paper_suite",
+  "matches": [
+    {
+      "id": "final_vs_basic",
+      "agent_a": "BasicAgent",
+      "agent_b": "NewAgent",
+      "agent_b_config": "experiments/configs/final.json",
+      "n_games": 120,
+      "seed": 42,
+      "fixed_seed": true
+    },
+    {
+      "id": "final_vs_pro",
+      "agent_a": "BasicAgentPro",
+      "agent_b": "NewAgent",
+      "agent_b_config": "experiments/configs/final.json",
+      "n_games": 120,
+      "seed": 42,
+      "fixed_seed": true
+    },
+    {
+      "id": "ablation_no_cma_vs_basic",
+      "agent_a": "BasicAgent",
+      "agent_b": "NewAgent",
+      "agent_b_config": "experiments/configs/no_cma.json",
+      "n_games": 120,
+      "seed": 42,
+      "fixed_seed": true
+    },
+    {
+      "id": "ablation_no_pruning_vs_basic",
+      "agent_a": "BasicAgent",
+      "agent_b": "NewAgent",
+      "agent_b_config": "experiments/configs/no_pruning.json",
+      "n_games": 120,
+      "seed": 42,
+      "fixed_seed": true
+    },
+    {
+      "id": "ablation_no_strategy_vs_basic",
+      "agent_a": "BasicAgent",
+      "agent_b": "NewAgent",
+      "agent_b_config": "experiments/configs/no_strategy.json",
+      "n_games": 120,
+      "seed": 42,
+      "fixed_seed": true
+    },
+    {
+      "id": "ablation_no_catastrophic_vs_basic",
+      "agent_a": "BasicAgent",
+      "agent_b": "NewAgent",
+      "agent_b_config": "experiments/configs/no_catastrophic.json",
+      "n_games": 120,
+      "seed": 42,
+      "fixed_seed": true
+    },
+    {
+      "id": "ablation_ghost_only_vs_basic",
+      "agent_a": "BasicAgent",
+      "agent_b": "NewAgent",
+      "agent_b_config": "experiments/configs/ghost_only.json",
+      "n_games": 120,
+      "seed": 42,
+      "fixed_seed": true
+    }
+  ]
+}

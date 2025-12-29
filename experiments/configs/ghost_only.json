@@ -1,0 +1,15 @@
+{
+  "use_cma_es": false,
+  "enable_strategic_bonus": false,
+  "enable_safety_shot": false,
+  "catastrophic_foul_penalty": 8000.0,
+  "samples_quick_filter": 1,
+  "samples_normal_eval": 1,
+  "samples_final_verify": 2,
+  "max_target_balls": 3,
+  "max_pockets_per_ball": 2,
+  "max_ghost_candidates": 20,
+  "max_speed_variants": 1,
+  "max_spin_variants": 1
+}
+

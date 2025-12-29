@@ -1,0 +1,12 @@
+{
+  "use_cma_es": true,
+  "cma_population_size": 4,
+  "cma_generations": 2,
+  "good_enough_score": 60.0,
+  "enable_strategic_bonus": true,
+  "enable_defense_threat": true,
+  "enable_positional_bonus": true,
+  "enable_safety_shot": true,
+  "catastrophic_foul_penalty": 8000.0
+}
+

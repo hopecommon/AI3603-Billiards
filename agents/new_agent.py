@@ -19,9 +19,11 @@ import numpy as np
 from pooltool.objects import PocketTableSpecs, Table, TableType
 import copy
 import os
+import json
 from datetime import datetime
 import random
 import signal
+from pathlib import Path
 
 from bayes_opt import BayesianOptimization, SequentialDomainReductionTransformer
 from sklearn.gaussian_process import GaussianProcessRegressor
@@ -145,8 +147,13 @@ class OptimizedNewAgent(Agent):
     STRIPE_IDS = ['9', '10', '11', '12', '13', '14', '15']
     BALL_RADIUS = 0.028575
     
-    def __init__(self):
+    def __init__(self, config: dict | str | Path | None = None):
         super().__init__()
+
+        # Use a dedicated RNG for internal simulations/candidate sampling, so we do not
+        # consume the global NumPy RNG state used by the environment noise.
+        self.rng_seed = None
+        self._rng = np.random.default_rng()
         
         # ============ 速度优化参数 ============
         
@@ -157,10 +164,12 @@ class OptimizedNewAgent(Agent):
         self.samples_critical = 6          # 关键球（黑8）：6次采样（从8→6）
         
         # 2. Ghost Ball 智能剪枝
+        self.max_target_balls = 3          # 只对最近的若干目标球生成候选
         self.max_ghost_candidates = 8      # 再减少候选，降低慢模拟概率
         self.max_pockets_per_ball = 2      # 每个球只尝试最近2个袋口
         self.max_speed_variants = 2        # 速度变体：2个
         self.max_spin_variants = 3         # 旋转变体：3个
+        self.include_contact_fallback_candidates = True
         
         # 3. CMA-ES 优化
         self.use_cma_es = False            # 默认关闭：CMA 很耗时且容易被慢模拟拖死
@@ -186,6 +195,11 @@ class OptimizedNewAgent(Agent):
         self.timeout_critical = 20         # 黑8给20秒
         
         # ============ 策略参数（保持不变以维持胜率）============
+        self.enable_strategic_bonus = True
+        self.enable_positional_bonus = True
+        self.enable_defense_threat = True
+        self.enable_safety_shot = True
+
         self.cue_next_ball_radius = 1.2
         self.cue_next_ball_weight = 30.0
         self.enemy_threat_radius = 0.8
@@ -227,8 +241,29 @@ class OptimizedNewAgent(Agent):
         self.positional_early_stop_score = 32.0
         
         self.my_target_type = None
+
+        self._apply_config(config)
+        if self.rng_seed is not None:
+            self._rng = np.random.default_rng(int(self.rng_seed))
         
         print("OptimizedNewAgent 已初始化 (速度优化版，保持70%+胜率)")
+
+    def _apply_config(self, config: dict | str | Path | None) -> None:
+        if config is None:
+            return
+        if isinstance(config, (str, Path)):
+            path = Path(config)
+            with path.open("r", encoding="utf-8") as f:
+                config_dict = json.load(f)
+        elif isinstance(config, dict):
+            config_dict = config
+        else:
+            raise TypeError("config must be dict or a JSON path")
+
+        for key, value in config_dict.items():
+            if not hasattr(self, key):
+                raise ValueError(f"Unknown OptimizedNewAgent config key: {key}")
+            setattr(self, key, value)
     
     def decision(self, balls=None, my_targets=None, table=None):
         """优化后的决策流程（带性能分析）"""
@@ -402,28 +437,34 @@ class OptimizedNewAgent(Agent):
             
             # Step 5: 走位杆检查（进攻得分低/黑8高风险时）
             t5 = time.time()
+            t5_elapsed = 0.0
             safety_chosen = False
-            safety_trigger = self.safety_trigger_score
-            if dangerous_black and not is_critical:
-                # 黑8离袋口近时，宁可打防守避免“误打黑8/白+8”的高方差
-                safety_trigger = max(safety_trigger, 45.0)
-            positional_trigger = max(safety_trigger, self.positional_trigger_score)
-            if best_score < positional_trigger:
-                safe_action, safe_score = self._plan_positional_shot_fast(
-                    balls, table, last_state_snapshot, prepared_targets
-                )
-                
-                if safe_action is not None and safe_score > best_score + self.positional_prefer_margin:
-                    print(f"[Step 5] 走位杆检查 - 选择走位杆: {safe_score:.1f} (vs 进攻 {best_score:.1f})")
-                    safety_chosen = True
-                    best_action = safe_action
-                    best_score = safe_score
-            
-            t5_elapsed = time.time() - t5
-            if best_score < positional_trigger:
-                print(f"[Step 5] 走位杆检查 - 耗时: {t5_elapsed:.2f}s, 选择: {'走位杆' if safety_chosen else '进攻'}")
+            positional_trigger = None
+
+            if self.enable_safety_shot:
+                safety_trigger = self.safety_trigger_score
+                if dangerous_black and not is_critical:
+                    # 黑8离袋口近时，宁可打防守避免“误打黑8/白+8”的高方差
+                    safety_trigger = max(safety_trigger, 45.0)
+                positional_trigger = max(safety_trigger, self.positional_trigger_score)
+                if best_score < positional_trigger:
+                    safe_action, safe_score = self._plan_positional_shot_fast(
+                        balls, table, last_state_snapshot, prepared_targets
+                    )
+                    if safe_action is not None and safe_score > best_score + self.positional_prefer_margin:
+                        print(f"[Step 5] 走位杆检查 - 选择走位杆: {safe_score:.1f} (vs 进攻 {best_score:.1f})")
+                        safety_chosen = True
+                        best_action = safe_action
+                        best_score = safe_score
+
+                t5_elapsed = time.time() - t5
+                if best_score < positional_trigger:
+                    print(f"[Step 5] 走位杆检查 - 耗时: {t5_elapsed:.2f}s, 选择: {'走位杆' if safety_chosen else '进攻'}")
+                else:
+                    print(f"[Step 5] 跳过安全球检查 (进攻得分{best_score:.1f}已足够)")
             else:
-                print(f"[Step 5] 跳过安全球检查 (进攻得分{best_score:.1f}已足够)")
+                t5_elapsed = time.time() - t5
+                print("[Step 5] 走位/安全策略已禁用")
             
             # Step 6: 最终验证（4次采样）
             t6 = time.time()
@@ -455,18 +496,19 @@ class OptimizedNewAgent(Agent):
                     # 强硬兜底：绝不带“致命风险”出杆。尝试安全球，再尝试保证碰球的兜底候选。
                     print("[OptimizedAgent] 最终验证发现致命风险且无可用备选：强制切换到安全/兜底动作")
 
-                    safety_action, _ = self._plan_positional_shot_fast(
-                        balls, table, last_state_snapshot, prepared_targets
-                    )
-                    if safety_action is not None:
-                        verify_score, verify_stats = self._evaluate_action_fast(
-                            safety_action, balls, table, last_state_snapshot,
-                            prepared_targets, samples_final, return_stats=True
+                    if self.enable_safety_shot:
+                        safety_action, _ = self._plan_positional_shot_fast(
+                            balls, table, last_state_snapshot, prepared_targets
                         )
-                        print(f"[OptimizedAgent] safety 再验证: score={verify_score:.1f}, catastrophic={verify_stats['catastrophic']}/{verify_stats['samples']}")
-                        if verify_stats["catastrophic"] == 0:
-                            best_action = safety_action
-                            return best_action
+                        if safety_action is not None:
+                            verify_score, verify_stats = self._evaluate_action_fast(
+                                safety_action, balls, table, last_state_snapshot,
+                                prepared_targets, samples_final, return_stats=True
+                            )
+                            print(f"[OptimizedAgent] safety 再验证: score={verify_score:.1f}, catastrophic={verify_stats['catastrophic']}/{verify_stats['samples']}")
+                            if verify_stats["catastrophic"] == 0:
+                                best_action = safety_action
+                                return best_action
 
                     contact_candidates = self._generate_contact_fallback_candidates(
                         balls, table, prepared_targets, max_targets=2
@@ -538,7 +580,7 @@ class OptimizedNewAgent(Agent):
         pockets = list(table.pockets.values())
         pocket_positions = [np.array(p.center[:2], dtype=float) for p in pockets]
         
-        # 只处理前3个目标球（按距离排序）
+        # 只处理最近的若干目标球（按距离排序）
         valid_targets = []
         for bid in player_targets:
             ball = balls.get(bid)
@@ -549,7 +591,7 @@ class OptimizedNewAgent(Agent):
             valid_targets.append((dist, bid, ball_pos))
         
         valid_targets.sort(key=lambda x: x[0])
-        valid_targets = valid_targets[:3]  # 只取最近的3个球
+        valid_targets = valid_targets[: max(1, int(self.max_target_balls))]
         
         for _, bid, ball_pos in valid_targets:
             # 找到最近的2个袋口
@@ -585,15 +627,22 @@ class OptimizedNewAgent(Agent):
                 # 计算基础速度
                 base_speed = self._calculate_optimal_speed(dist_to_ghost, dist_to_pocket)
                 
-                # 速度变体：2个
-                speed_variants = [base_speed * 0.9, base_speed * 1.1]
-                
-                # 旋转变体：3个（减少到最有效的）
-                spin_variants = [
-                    (0.0, 0.0),      # 无旋转
-                    (0.0, -0.15),    # 低杆（拉杆）
-                    (0.0, 0.15),     # 高杆（跟进）
+                # Speed variants around the geometric estimate.
+                if int(self.max_speed_variants) <= 1:
+                    speed_variants = [base_speed]
+                else:
+                    multipliers = np.linspace(0.9, 1.1, int(self.max_speed_variants))
+                    speed_variants = [base_speed * float(m) for m in multipliers]
+
+                # Spin variants (trimmed pool for ablations).
+                spin_pool = [
+                    (0.0, 0.0),      # no spin
+                    (0.0, -0.15),    # draw
+                    (0.0, 0.15),     # follow
+                    (0.12, 0.0),     # left
+                    (-0.12, 0.0),    # right
                 ]
+                spin_variants = spin_pool[: max(1, int(self.max_spin_variants))]
                 
                 for speed in speed_variants:
                     for spin_a, spin_b in spin_variants:
@@ -606,13 +655,14 @@ class OptimizedNewAgent(Agent):
                         })
 
         # 兜底：加入“直接撞击最近目标球”的候选，避免路径检查过严导致无解
-        direct_hits = self._generate_contact_fallback_candidates(balls, table, player_targets, max_targets=2)
-        candidates.extend(direct_hits)
+        if self.include_contact_fallback_candidates:
+            direct_hits = self._generate_contact_fallback_candidates(balls, table, player_targets, max_targets=2)
+            candidates.extend(direct_hits)
         
         # 限制总候选数
         if len(candidates) > self.max_ghost_candidates:
             # 随机采样保持多样性
-            indices = np.random.choice(len(candidates), self.max_ghost_candidates, replace=False)
+            indices = self._rng.choice(len(candidates), self.max_ghost_candidates, replace=False)
             candidates = [candidates[i] for i in indices]
         
         return candidates
@@ -933,6 +983,9 @@ class OptimizedNewAgent(Agent):
         重要：即使本杆不进球，也要给“走位变好”的局面一定正向奖励，
         否则走位杆永远不会被选中。
         """
+        if not self.enable_strategic_bonus:
+            return 0.0
+
         cue_ball = shot.balls.get("cue")
         if cue_ball is None or cue_ball.state.s == 4:
             return -200.0
@@ -946,18 +999,19 @@ class OptimizedNewAgent(Agent):
             if bid in last_state and b.state.s == 4 and last_state[bid].state.s != 4 and bid in targets
         ]
 
-        # 白球远离袋口（降低白球/白+8风险）
-        min_pocket_dist = float("inf")
-        for pocket in table.pockets.values():
-            pocket_pos = np.array(pocket.center[:2], dtype=float)
-            min_pocket_dist = min(min_pocket_dist, float(np.linalg.norm(cue_pos - pocket_pos)))
-        bonus += 18.0 * float(np.clip((min_pocket_dist - 0.18) / 0.27, 0.0, 1.0))
+        if self.enable_positional_bonus:
+            # White ball far from pockets (lower scratch risk).
+            min_pocket_dist = float("inf")
+            for pocket in table.pockets.values():
+                pocket_pos = np.array(pocket.center[:2], dtype=float)
+                min_pocket_dist = min(min_pocket_dist, float(np.linalg.norm(cue_pos - pocket_pos)))
+            bonus += 18.0 * float(np.clip((min_pocket_dist - 0.18) / 0.27, 0.0, 1.0))
 
-        # 白球靠近中心（提升下杆可解性）
-        center = np.array([table.l / 2.0, table.w / 2.0], dtype=float)
-        dist_center = float(np.linalg.norm(cue_pos - center))
-        max_center_dist = float(np.linalg.norm(np.array([table.l, table.w], dtype=float) / 2.0))
-        bonus += 10.0 * float(np.clip(1.0 - dist_center / max_center_dist, 0.0, 1.0))
+            # White ball closer to table center (improve solvability).
+            center = np.array([table.l / 2.0, table.w / 2.0], dtype=float)
+            dist_center = float(np.linalg.norm(cue_pos - center))
+            max_center_dist = float(np.linalg.norm(np.array([table.l, table.w], dtype=float) / 2.0))
+            bonus += 10.0 * float(np.clip(1.0 - dist_center / max_center_dist, 0.0, 1.0))
 
         # 白球靠近下一目标球（进球后更重要；无进球时也有一定意义）
         remaining_positions = []
@@ -966,13 +1020,13 @@ class OptimizedNewAgent(Agent):
             if ball is None or ball.state.s == 4:
                 continue
             remaining_positions.append(np.array(ball.state.rvw[0][:2], dtype=float))
-        if remaining_positions:
+        if self.enable_positional_bonus and remaining_positions:
             min_dist = float(min(np.linalg.norm(cue_pos - pos) for pos in remaining_positions))
             if min_dist < self.cue_next_ball_radius:
                 bonus += self.cue_next_ball_weight * (1 - min_dist / self.cue_next_ball_radius)
 
         # 防守：只有在“未打进己方球（将换对手）”时才计算对手威胁
-        if not pocketed_own:
+        if self.enable_defense_threat and (not pocketed_own):
             opponent_threat = self._estimate_opponent_pot_threat(shot, table)
             bonus -= self.opponent_pot_threat_weight * opponent_threat
 
@@ -1079,7 +1133,7 @@ class OptimizedNewAgent(Agent):
                     'maxiter': self.cma_generations,
                     'verbose': -9,
                     'verb_filenameprefix': '',  # 禁用文件输出
-                    'seed': np.random.randint(1e6),
+                    'seed': int(self._rng.integers(1_000_000)),
                     'tolx': 1e-3,  # 添加收敛阈值，提前停止
                     'tolfun': 1e-2  # 函数值变化阈值
                 }
@@ -1149,7 +1203,7 @@ class OptimizedNewAgent(Agent):
 
         # 2) 少量随机角度补充（极端拥挤/无明显目标时兜底）
         for angle in np.linspace(0, 360, self.positional_random_angles, endpoint=False):
-            V0 = float(np.random.uniform(*self.safe_speed_bounds))
+            V0 = float(self._rng.uniform(*self.safe_speed_bounds))
             candidates.append({
                 "V0": V0,
                 "phi": float(angle),
@@ -1232,11 +1286,11 @@ class OptimizedNewAgent(Agent):
     def _sample_noisy_params(self, V0, phi, theta, a, b):
         """采样噪声参数"""
         return {
-            'V0': float(V0 + np.random.normal(0, 0.1)),
-            'phi': float(phi + np.random.normal(0, 0.1)),
-            'theta': float(theta + np.random.normal(0, 0.1)),
-            'a': float(a + np.random.normal(0, 0.003)),
-            'b': float(b + np.random.normal(0, 0.003))
+            'V0': float(V0 + self._rng.normal(0, 0.1)),
+            'phi': float(phi + self._rng.normal(0, 0.1)),
+            'theta': float(theta + self._rng.normal(0, 0.1)),
+            'a': float(a + self._rng.normal(0, 0.003)),
+            'b': float(b + self._rng.normal(0, 0.003))
         }
     
     def _is_degenerate_params(self, params):
@@ -1248,8 +1302,8 @@ class OptimizedNewAgent(Agent):
     def _random_action(self):
         """随机动作"""
         return {
-            'V0': float(np.random.uniform(2.0, 5.0)),
-            'phi': float(np.random.uniform(0, 360)),
+            'V0': float(self._rng.uniform(2.0, 5.0)),
+            'phi': float(self._rng.uniform(0, 360)),
             'theta': 2.0,
             'a': 0.0,
             'b': 0.0
