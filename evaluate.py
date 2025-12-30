@@ -31,7 +31,7 @@ n_games = 20
 
 ## 选择对打的对手
 agent_a, agent_b = BasicAgentPro(), NewAgentPro() # 与 BasicAgent 对打
-# agent_a, agent_b = BasicAgentPro(), NewAgent() # 与 BasicAgentPro 对打
+#agent_a, agent_b = BasicAgent(), NewAgentPro() # 与 BasicAgentPro 对打
 
 players = [agent_a, agent_b]  # 用于切换先后手
 target_ball_choice = ['solid', 'solid', 'stripe', 'stripe']  # 轮换球型
