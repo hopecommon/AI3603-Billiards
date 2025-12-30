@@ -562,7 +562,7 @@ class OptimizedNewAgent(Agent):
     # ========== 智能候选生成（核心优化）==========
     
     def _generate_smart_ghost_candidates(self, balls, table, player_targets):
-        """智能生成高质量 Ghost Ball 候选（450→15个）
+        """智能生成高质量 Ghost Ball 候选（≈450→8个）
         
         优化策略：
         1. 只对前3个目标球生成候选
@@ -571,7 +571,7 @@ class OptimizedNewAgent(Agent):
         4. 旋转变体：3个（无旋转、低杆、高杆）
         5. 预筛选：移除明显不可行的候选
         
-        复杂度：3球 × 2袋口 × 2速度 × 3旋转 = 36个候选
+        复杂度：3球 × 2袋口 × 2速度 × 3旋转 = 36个候选（再 cap 到 max_ghost_candidates）
         """
         candidates = []
         cue_ball = balls.get('cue')

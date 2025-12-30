@@ -87,7 +87,7 @@ def create_figure1_pipeline(outdir: Path):
     
     # Define stages
     stages = [
-        ("1. Intelligent Ghost Ball\nGeneration", 10, "450 → 15 candidates\n(30× reduction)"),
+        ("1. Intelligent Ghost Ball\nGeneration", 10, "450 → 8 candidates\n(>50× reduction)"),
         ("2. Fast Filtering\n(1-2 samples)", 8.5, "15 → 3 candidates\n(Quick rejection)"),
         ("3. Refined Evaluation\n(2-4 samples)", 7, "Catastrophic filtering\n(Hard constraints)"),
         ("4. Selective CMA-ES\n(if score < 60)", 5.5, "λ=4, g=2\n(Local refinement)"),

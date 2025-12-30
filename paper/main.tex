@@ -116,7 +116,7 @@ The 8-ball pool domain presents several fundamental challenges:
 This work makes the following contributions:
 
 \begin{enumerate}
-\item \textbf{Geometry-Guided Candidate Generation:} We develop a Ghost Ball method that generates high-quality shot candidates by exploiting billiards geometry, reducing the candidate pool from 450 to 15 while preserving solution quality—a 30$\times$ reduction in candidate enumeration.
+\item \textbf{Geometry-Guided Candidate Generation:} We develop a Ghost Ball method that generates high-quality shot candidates by exploiting billiards geometry, reducing the candidate pool from $\sim$450 to 8 while preserving solution quality (a $>$50$\times$ reduction in candidate enumeration).
 
 \item \textbf{Hybrid Optimization Strategy:} We combine Ghost Ball geometric aiming with CMA-ES local optimization, leveraging the strengths of both domain-specific heuristics and general-purpose evolution strategies.
 
@@ -208,7 +208,7 @@ Our agent architecture combines geometric intelligence with evolution strategies
 \begin{figure}[t]
 \centering
 \includegraphics[width=\columnwidth]{figure1_pipeline.pdf}
-\caption{Overall decision pipeline: (1) heuristic/geometric Ghost Ball candidate generation, (2) fast filtering (1--2 rollouts), (3) refined evaluation (2--4 rollouts) with catastrophic foul filtering, (4) selective CMA-ES refinement (triggered only when score $< 60$; otherwise bypassed), (5) positional/safety shot planning, and (6) final verification (4--6 rollouts) with increased sampling in high-risk states.}
+\caption{Overall decision pipeline: (1) heuristic/geometric Ghost Ball candidate generation (capped to 8 candidates), (2) fast filtering (1 rollout), (3) refined evaluation (2 rollouts; critical states: 6) with catastrophic foul filtering, (4) selective CMA-ES refinement (triggered only when score $< 60$; otherwise bypassed), (5) positional/safety shot planning, and (6) final verification (4 rollouts; critical states: 6) with increased sampling in high-risk states.}
 \label{fig:pipeline}
 \end{figure}
 
@@ -237,7 +237,7 @@ V_0 &= f_{\text{speed}}(\|\mathbf{p}_{\text{ghost}} - \mathbf{p}_{\text{cue}}\|,
 
 where $f_{\text{speed}}$ is an empirical function mapping distances to optimal velocity (e.g., 2.5 m/s for short shots, 4.5 m/s for long shots).
 
-\textbf{Heuristic-Guided Pruning:} Naive enumeration over all target balls $\times$ all pockets $\times$ velocity/spin variants yields $\sim$450 candidates per decision. We formalize pruning as a filtering pipeline to construct a reduced candidate set $C_{\text{pruned}} \subset C_{\text{initial}}$:
+\textbf{Heuristic-Guided Pruning:} Naive enumeration over all target balls $\times$ all pockets $\times$ velocity/spin variants yields $\sim$450 candidates per decision. We formalize pruning as a filtering pipeline to construct a reduced candidate set $C_{\text{pruned}} \subset C_{\text{initial}}$, and finally cap the candidate set size (default: 8) to control rollout cost:
 
 \begin{enumerate}
     \item \textit{Target prioritization}: Define $T_{\text{sorted}} = \text{Sort}(T_{\text{own}}, \text{by } \|\mathbf{p}_t - \mathbf{p}_{\text{cue}}\|)$. Evaluate only $T_{\text{top}} = T_{\text{sorted}}[:3]$ (nearest 3 balls).
@@ -247,7 +247,7 @@ where $f_{\text{speed}}$ is an empirical function mapping distances to optimal v
     \item \textit{Path feasibility}: Reject candidate $(t, p)$ if $\exists b \in \mathcal{B} \setminus \{t\}$ such that the distance from $\mathbf{p}_b$ to the \emph{segment} $\overline{\mathbf{p}_{\text{cue}}\mathbf{p}_{\text{ghost}}}$ is below $2.5R$, where the projection point is required to fall within the segment endpoints (empirically tuned threshold).
 \end{enumerate}
 
-This reduces candidates to $|C_{\text{pruned}}| \approx 15$ (a 30$\times$ reduction) while retaining high-quality shots. Additional velocity variants $V \in \{0.9V_0, 1.1V_0\}$ and spin configurations $\mathbf{s} \in \{(0,0), (0,\pm0.15)\}$ expand the final set to $\approx$15--20 candidates per decision.
+In our default configuration, we retain at most 3 nearest target balls and 2 nearest pockets per ball, and expand around the geometric estimate using velocity variants $V \in \{0.9V_0, 1.1V_0\}$ and spin configurations $\mathbf{s} \in \{(0,0), (0,\pm0.15)\}$. After feasibility checks, we cap the final set size to 8 candidates for runtime stability.
 
 \subsection{CMA-ES Local Optimization}
 
@@ -340,11 +340,11 @@ If any candidate exhibits $f_{\text{catastrophic}} > 0$ in any sample during fil
 \EndFor
 \State $C \gets C \cup$ ContactFallbackCandidates($T$) \Comment{Guarantee legal contact}
 
-\State \textbf{Stage 2: Fast Filtering (1--2 samples)}
+\State \textbf{Stage 2: Fast Filtering (1 sample)}
 \State $S_{\text{quick}} \gets \{(\text{Evaluate}(\mathbf{a}, \mathbf{s}, n_{\text{samples}}=1), \mathbf{a}) : \mathbf{a} \in C\}$
 \State $C_{\text{top}} \gets$ TopK($S_{\text{quick}}$, k=3) \Comment{Retain best 3}
 
-\State \textbf{Stage 3: Refined Evaluation (2--4 samples)}
+\State \textbf{Stage 3: Refined Evaluation (2 samples; critical: 6)}
 \State $n_{\text{eval}} \gets$ IsCritical($\mathbf{s}$) ? 6 : 2
 \For{$\mathbf{a} \in C_{\text{top}}$}
     \State $R, \text{stats} \gets$ EvaluateWithStats($\mathbf{a}, \mathbf{s}, n_{\text{eval}}$)
@@ -371,7 +371,7 @@ If any candidate exhibits $f_{\text{catastrophic}} > 0$ in any sample during fil
     \EndIf
 \EndIf
 
-\State \textbf{Stage 6: Final Verification (4--6 samples)}
+\State \textbf{Stage 6: Final Verification (4 samples; critical: 6)}
 \State $n_{\text{verify}} \gets$ IsCritical($\mathbf{s}$) ? 6 : 4
 \State $R_{\text{final}}, \text{stats} \gets$ EvaluateWithStats($\mathbf{a}_{\text{best}}, \mathbf{s}, n_{\text{verify}}$)
 \If{stats.catastrophic $> 0$} \Comment{Fallback if unsafe}
@@ -445,7 +445,7 @@ Beyond the three milestones, we performed targeted micro-optimizations (threshol
 
 The final agent combines:
 \begin{enumerate}
-    \item Heuristic/Geometric Ghost Ball generation (15 candidates)
+    \item Heuristic/Geometric Ghost Ball generation (8 candidates)
     \item Layered filtering (1 $\rightarrow$ 2 $\rightarrow$ 4 samples)
     \item Selective CMA-ES refinement (top-1 if score $< 60$)
     \item Strategic bonus evaluation (positional + defensive)
@@ -500,9 +500,8 @@ $w_{\text{def}}$ & 35 & Defensive weight \\
 $\beta_1, \beta_2$ & 0.8, 0.6 & Threat factors \\
 \hline
 Quick filter samples & 1 & Stage 2 \\
-Refined samples & 2--4 & Stage 3 \\
-Final verification & 4--6 & Stage 6 \\
-Critical state samples & 6 & 8-ball risk \\
+Refined samples & 2 (critical: 6) & Stage 3 \\
+Final verification & 4 (critical: 6) & Stage 6 \\
 \hline
 Safety threshold & 35 & $R < 35$ triggers \\
 8-ball danger zone & 14 cm & Pocket proximity \\
