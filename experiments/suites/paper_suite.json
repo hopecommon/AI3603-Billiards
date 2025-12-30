@@ -47,10 +47,10 @@
       "fixed_seed": true
     },
     {
-      "id": "ablation_no_catastrophic_vs_basic",
+      "id": "ablation_with_catastrophic_penalty_vs_basic",
       "agent_a": "BasicAgent",
       "agent_b": "NewAgent",
-      "agent_b_config": "experiments/configs/no_catastrophic.json",
+      "agent_b_config": "experiments/configs/with_catastrophic_penalty.json",
       "n_games": 120,
       "seed": 42,
       "fixed_seed": true

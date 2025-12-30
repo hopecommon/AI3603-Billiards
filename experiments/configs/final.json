@@ -7,6 +7,5 @@
   "enable_defense_threat": true,
   "enable_positional_bonus": true,
   "enable_safety_shot": true,
-  "catastrophic_foul_penalty": 8000.0
+  "catastrophic_foul_penalty": 0.0
 }
-

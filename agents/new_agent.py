@@ -172,7 +172,8 @@ class OptimizedNewAgent(Agent):
         self.include_contact_fallback_candidates = True
         
         # 3. CMA-ES 优化
-        self.use_cma_es = False            # 默认关闭：CMA 很耗时且容易被慢模拟拖死
+        # Default behavior should match `experiments/configs/final.json` unless explicitly overridden.
+        self.use_cma_es = True
         self.cma_population_size = 4       
         self.cma_generations = 2           
         self.cma_sigma = 0.5
@@ -218,8 +219,9 @@ class OptimizedNewAgent(Agent):
 
         # ============ 风险控制（针对“即时判负”）============
         # PoolEnv 中以下情况会直接判负：白球+黑8同杆进袋、清台前黑8进袋
-        # 仅靠 analyze_shot_for_reward 的 -150 往往不足以压住进攻奖励，必须额外硬惩罚+验证
-        self.catastrophic_foul_penalty = 8000.0   # 非法黑8 / 白球+黑8
+        # 我们主要依赖“致命犯规硬过滤”(stats["catastrophic"]>0 直接剔除) + 多阶段验证来规避。
+        # 软惩罚项在部分对手上可能过于保守（消融实验显示禁用可提升胜率），因此默认关闭。
+        self.catastrophic_foul_penalty = 0.0      # 非法黑8 / 白球+黑8（可在配置中开启）
         self.scratch_extra_penalty = 600.0        # 白球进袋（非即时判负，但会回滚+交换）
         self.first_hit_extra_penalty = 120.0      # 首球犯规（回滚+交换）
         self.no_rail_extra_penalty = 80.0         # 无碰库犯规（回滚+交换）

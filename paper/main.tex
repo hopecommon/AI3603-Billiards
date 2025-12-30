@@ -103,7 +103,7 @@ The 8-ball pool domain presents several fundamental challenges:
 
 \textbf{Complex Physical Dynamics:} Accurate shot evaluation requires physics simulation accounting for ball-ball collisions, cushion bounces, friction, and spin effects. Each simulation takes 0.1--0.5 seconds, severely limiting the number of candidate actions that can be evaluated within the time budget.
 
-\textbf{Environmental Noise:} Following real-world billiards, the simulator introduces Gaussian noise ($\sigma = 0.1$) to all action parameters, making outcome prediction inherently stochastic. Agents must be robust to this uncertainty.
+\textbf{Environmental Noise:} Following real-world billiards, the simulator introduces Gaussian noise ($\sigma = 0.1$) to all action parameters, making outcome prediction inherently stochastic. Noise is applied independently in each action dimension in its native unit (degrees for angles, m/s for speed, and unitless for spin). Agents must be robust to this uncertainty.
 
 \textbf{Sparse and Discontinuous Rewards:} Most randomly sampled shots produce no pocketed balls and may trigger fouls; useful feedback is sparse and highly non-smooth due to pot-or-fail outcomes under stochastic action noise.
 
@@ -141,7 +141,7 @@ Monte Carlo Tree Search (MCTS) \cite{coulom2006mcts,kocsis2006uct} has driven ma
 
 \subsection{Billiards as Continuous, Noisy Control}
 
-Compared with classic board games, billiards introduces noisy continuous control coupled with long-horizon adversarial strategy. High-fidelity simulators such as Pooltool \cite{pooltool2023} enable rapid iteration, but also expose engineering bottlenecks: repeated deep copies of environment state and long simulator trajectories make naive sampling or optimization intractable under strict time limits. Our method focuses on exploiting billiards geometry to reduce simulator calls, and then uses CMA-ES only as a local ``sniper'' around strong geometric candidates.
+Compared with classic board games, billiards introduces noisy continuous control coupled with long-horizon adversarial strategy. High-fidelity simulators such as Pooltool \cite{pooltool2023} enable rapid iteration, but also expose engineering bottlenecks: repeated deep copies of environment state and long simulator trajectories make naive sampling or optimization intractable under strict time limits. Our method focuses on exploiting billiards geometry to reduce simulator calls, and then applies CMA-ES as a local refinement step initialized from high-quality geometric candidates.
 
 \section{PROBLEM FORMULATION}
 
@@ -413,7 +413,7 @@ This section narrates the \textit{three core milestones} of our agent, while tre
 
 	\textbf{Results:} The measured performance is represented by the \textit{w/o Strategy/Safety} row in Table~\ref{table_ablation}, which keeps the core pipeline while removing higher-level strategic terms.
 
-	\textbf{Analysis:} This milestone establishes the main compute/quality Pareto point: pruning improves throughput, and selective CMA-ES allocates extra compute only to hard decisions.
+	\textbf{Analysis:} This milestone identifies a favorable empirical trade-off between decision quality and runtime: pruning improves throughput, and selective CMA-ES allocates extra compute only to hard decisions.
 
 \textbf{Key Lesson:} \textit{Allocate the limited computational budget primarily to a refined set of high-quality candidates, and refine locally only when needed.}
 
@@ -439,7 +439,7 @@ This section narrates the \textit{three core milestones} of our agent, while tre
 
 \subsection{Micro-Optimizations and Ablations}
 
-Beyond the three milestones, we performed targeted micro-optimizations (threshold tuning, sampling schedules) and validated key components using ablations. Table~\ref{table_ablation} reports measured effects for removing pruning, disabling CMA-ES, disabling strategy/safety, and removing catastrophic-foul penalties.
+Beyond the three milestones, we performed targeted micro-optimizations (threshold tuning, sampling schedules) and validated key components using ablations. Table~\ref{table_ablation} reports measured effects for removing pruning, disabling CMA-ES, disabling strategy/safety, and adding a soft catastrophic-foul penalty term.
 
 \subsection{Final Architecture Summary}
 
@@ -453,7 +453,7 @@ The final agent combines:
     \item Safety shot fallback for low-reward states
 \end{enumerate}
 
-This pipeline achieves a Pareto-optimal balance between win rate and decision time, meeting the dual objectives of competitive performance and real-time responsiveness.
+This pipeline achieves a competitive balance between win rate and decision time among the evaluated configurations, meeting the dual objectives of competitive performance and real-time responsiveness.
 
 \begin{figure}[t]
 \centering
@@ -550,7 +550,7 @@ To isolate each component's contribution, we run ablations by disabling one modu
     \item Geometric pruning is essential for wall-clock feasibility: as shown in the \textit{Over-180s Rate} column of Table~\ref{table_ablation}, removing pruning substantially increases over-budget games.
     \item Selective CMA-ES refinement improves win rate at a moderate runtime cost; disabling it reduces compute but also reduces decision quality.
     \item Strategy/safety terms stabilize play in low-reward states by preferring low-variance shots, especially when the 8-ball is close to a pocket.
-    \item Catastrophic-foul control prevents instant-loss fouls (illegal 8-ball potting; cue+8 scratch), improving robustness to action noise.
+    \item Interestingly, adding a soft catastrophic-foul penalty can reduce win rate against BasicAgent in our setting; the default system relies on hard filtering and multi-stage verification to avoid instant-loss fouls, while the penalty term is treated as an optional conservative bias.
 \end{itemize}
 
 \textbf{Synergy Effect:} The full system outperforms the sum of isolated components, indicating beneficial interactions (e.g., pruning + CMA-ES is more effective than either alone; strategic bonuses + safety planner reinforce defensive play).
@@ -612,7 +612,7 @@ Several promising extensions warrant exploration:
 
 \textbf{Generalization to Other Domains:} The geometric pruning + selective evolution strategy may transfer to other continuous control domains with structured constraints (e.g., robotic manipulation, drone navigation, industrial process control).
 
-In summary, this work demonstrates that intelligent integration of domain knowledge with general-purpose optimization can yield Pareto-superior solutions in time-constrained decision-making. The lessons learned—prioritize candidate quality over quantity, adapt computational budget to difficulty, and filter catastrophic failures early—apply broadly to AI systems operating under resource constraints.
+In summary, this work demonstrates that intelligent integration of domain knowledge with general-purpose optimization can yield favorable trade-offs in time-constrained decision-making. The lessons learned—prioritize candidate quality over quantity, adapt computational budget to difficulty, and filter catastrophic failures early—apply broadly to AI systems operating under resource constraints.
 
 \addtolength{\textheight}{-12cm}   % Balance column lengths on last page
 

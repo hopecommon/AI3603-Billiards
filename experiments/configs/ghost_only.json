@@ -2,7 +2,7 @@
   "use_cma_es": false,
   "enable_strategic_bonus": false,
   "enable_safety_shot": false,
-  "catastrophic_foul_penalty": 8000.0,
+  "catastrophic_foul_penalty": 0.0,
   "samples_quick_filter": 1,
   "samples_normal_eval": 1,
   "samples_final_verify": 2,
@@ -12,4 +12,3 @@
   "max_speed_variants": 1,
   "max_spin_variants": 1
 }
-

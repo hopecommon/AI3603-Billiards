@@ -27,6 +27,21 @@ def _find_match(aggregated: dict[str, Any], match_id: str) -> dict[str, Any]:
     raise KeyError(f"Missing match id in results: {match_id}")
 
 
+def _find_match_any(aggregated: dict[str, Any], match_ids: list[str]) -> dict[str, Any]:
+    last_err: Exception | None = None
+    for mid in match_ids:
+        try:
+            return _find_match(aggregated, mid)
+        except Exception as e:
+            last_err = e
+    raise KeyError(f"Missing all candidate match ids in results: {match_ids}") from last_err
+
+def _has_match(aggregated: dict[str, Any], match_id: str) -> bool:
+    for m in aggregated.get("matches", []):
+        if m.get("id") == match_id:
+            return True
+    return False
+
 def _extract_agent_b_metrics(match_summary: dict[str, Any]) -> dict[str, float]:
     results = match_summary["summary"]["results"]
     n_games = int(match_summary["summary"]["match"]["n_games"])
@@ -54,18 +69,28 @@ def main() -> int:
     final_basic = _extract_agent_b_metrics(_find_match(aggregated, "final_vs_basic"))
     final_pro = _extract_agent_b_metrics(_find_match(aggregated, "final_vs_pro"))
 
+    has_with_cat = _has_match(aggregated, "ablation_with_catastrophic_penalty_vs_basic")
     ablations = [
         ("Ghost Ball Only", "ablation_ghost_only_vs_basic"),
         ("Full System", "final_vs_basic"),
         ("w/o CMA-ES", "ablation_no_cma_vs_basic"),
         ("w/o Geometric Pruning", "ablation_no_pruning_vs_basic"),
         ("w/o Strategy/Safety", "ablation_no_strategy_vs_basic"),
-        ("w/o Catastrophic Penalty", "ablation_no_catastrophic_vs_basic"),
+        (
+            "+ Catastrophic Penalty" if has_with_cat else "w/o Catastrophic Penalty",
+            [
+                "ablation_with_catastrophic_penalty_vs_basic",
+                "ablation_no_catastrophic_vs_basic",
+            ],
+        ),
     ]
 
     ablation_rows: list[tuple[str, dict[str, float]]] = []
     for label, mid in ablations:
-        ablation_rows.append((label, _extract_agent_b_metrics(_find_match(aggregated, mid))))
+        if isinstance(mid, list):
+            ablation_rows.append((label, _extract_agent_b_metrics(_find_match_any(aggregated, mid))))
+        else:
+            ablation_rows.append((label, _extract_agent_b_metrics(_find_match(aggregated, mid))))
 
     macros = "\n".join(
         [

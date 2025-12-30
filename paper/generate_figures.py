@@ -224,12 +224,17 @@ def create_figure3_evolution(outdir: Path, results_path: Path | None):
             ("Ghost Ball Only", "ablation_ghost_only_vs_basic"),
             ("w/o CMA-ES", "ablation_no_cma_vs_basic"),
             ("w/o Strategy/Safety", "ablation_no_strategy_vs_basic"),
-            ("w/o Catastrophic Penalty", "ablation_no_catastrophic_vs_basic"),
+            ("+ Catastrophic Penalty", "ablation_with_catastrophic_penalty_vs_basic"),
             ("w/o Geometric Pruning", "ablation_no_pruning_vs_basic"),
             ("Full System", "final_vs_basic"),
         ]
         for label, mid in order:
             s = by_id.get(mid)
+            if not s and mid == "ablation_with_catastrophic_penalty_vs_basic":
+                # Backward-compatible fallback for older result bundles.
+                s = by_id.get("ablation_no_catastrophic_vs_basic")
+                if s is not None:
+                    label = "w/o Catastrophic Penalty"
             if not s:
                 continue
             r = s["results"]

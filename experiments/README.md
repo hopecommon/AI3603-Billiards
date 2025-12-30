@@ -67,7 +67,7 @@ Typical patterns:
 - `no_cma.json`: disables CMA-ES refinement
 - `no_pruning.json`: expands candidate generation (more targets/pockets/candidates)
 - `no_strategy.json`: disables strategic bonus and safety planning
-- `no_catastrophic.json`: removes catastrophic foul penalty (for measured risk impact)
+- `with_catastrophic_penalty.json`: enables an additional soft catastrophic foul penalty (ablation; default is disabled)
 - `ghost_only.json`: near-geometry-only baseline
 
 ## Notes on the 180s Budget
