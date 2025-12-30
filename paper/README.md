@@ -25,6 +25,13 @@ bash scripts/refresh_paper_data.sh
 cd paper && ./compile.sh
 ```
 
+If you already have `paper/results/summary.json` and only want to regenerate tables/figures (no re-run), just run the script again.
+To force a full re-run, use:
+
+```bash
+bash scripts/refresh_paper_data.sh -f
+```
+
 If you prefer fewer logs while keeping progress bars:
 
 ```bash

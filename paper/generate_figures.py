@@ -232,12 +232,13 @@ def create_figure3_evolution(outdir: Path, results_path: Path | None):
             if not s:
                 continue
             r = s["results"]
+            over_rate = float(r.get("over_budget_rate", r.get("timeout_rate", 0.0))) * 100.0
             points.append(
                 (
                     label,
                     float(r["avg_game_time_s"]),
                     float(r["win_rate_agent_b"]) * 100.0,
-                    float(r["timeout_rate"]) * 100.0,
+                    over_rate,
                 )
             )
 

@@ -12,6 +12,17 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cd "$ROOT_DIR"
 
+# Usage: bash scripts/refresh_paper_data.sh [-f|--force]
+# - Without -f, if `paper/results/summary.json` exists, skip re-running experiments
+#   and only regenerate tables/figures.
+FORCE=0
+for arg in "$@"; do
+  case "$arg" in
+    -f|--force) FORCE=1 ;;
+    *) ;;
+  esac
+done
+
 # By default, respect per-match `n_games` specified in `experiments/suites/paper_suite.json`
 # (final matchups use 120; ablations use fewer games to keep runtime reasonable).
 # If you want to override ALL matches, set N_GAMES_ALL=...
@@ -22,19 +33,24 @@ LOG="${LOG:-paper/results/run.log}"
 mkdir -p "$(dirname "${LOG}")"
 LOG_FLUSH_SECONDS="${LOG_FLUSH_SECONDS:-10}"
 
-if [ -n "${N_GAMES_ALL}" ]; then
-  echo "[1/4] Running experiment suite (override n_games=${N_GAMES_ALL}, seed=${SEED})..."
-  if [ "${QUIET}" = "1" ]; then
-    python experiments/run_suite.py --suite experiments/suites/paper_suite.json --out paper/results --n-games "${N_GAMES_ALL}" --seed "${SEED}" --fixed-seed --quiet --progress --log-file "${LOG}" --log-flush-seconds "${LOG_FLUSH_SECONDS}"
-  else
-    python experiments/run_suite.py --suite experiments/suites/paper_suite.json --out paper/results --n-games "${N_GAMES_ALL}" --seed "${SEED}" --fixed-seed --no-quiet --progress --log-file "${LOG}" --log-flush-seconds "${LOG_FLUSH_SECONDS}"
-  fi
+RESULTS_SUMMARY="paper/results/summary.json"
+if [ "${FORCE}" = "0" ] && [ -f "${RESULTS_SUMMARY}" ]; then
+  echo "[1/4] Skipping experiments (found ${RESULTS_SUMMARY}). Use -f to rerun."
 else
-  echo "[1/4] Running experiment suite (use per-match n_games, seed=${SEED})..."
-  if [ "${QUIET}" = "1" ]; then
-    python experiments/run_suite.py --suite experiments/suites/paper_suite.json --out paper/results --seed "${SEED}" --fixed-seed --quiet --progress --log-file "${LOG}" --log-flush-seconds "${LOG_FLUSH_SECONDS}"
+  if [ -n "${N_GAMES_ALL}" ]; then
+    echo "[1/4] Running experiment suite (override n_games=${N_GAMES_ALL}, seed=${SEED})..."
+    if [ "${QUIET}" = "1" ]; then
+      python experiments/run_suite.py --suite experiments/suites/paper_suite.json --out paper/results --n-games "${N_GAMES_ALL}" --seed "${SEED}" --fixed-seed --quiet --progress --log-file "${LOG}" --log-flush-seconds "${LOG_FLUSH_SECONDS}"
+    else
+      python experiments/run_suite.py --suite experiments/suites/paper_suite.json --out paper/results --n-games "${N_GAMES_ALL}" --seed "${SEED}" --fixed-seed --no-quiet --progress --log-file "${LOG}" --log-flush-seconds "${LOG_FLUSH_SECONDS}"
+    fi
   else
-    python experiments/run_suite.py --suite experiments/suites/paper_suite.json --out paper/results --seed "${SEED}" --fixed-seed --no-quiet --progress --log-file "${LOG}" --log-flush-seconds "${LOG_FLUSH_SECONDS}"
+    echo "[1/4] Running experiment suite (use per-match n_games, seed=${SEED})..."
+    if [ "${QUIET}" = "1" ]; then
+      python experiments/run_suite.py --suite experiments/suites/paper_suite.json --out paper/results --seed "${SEED}" --fixed-seed --quiet --progress --log-file "${LOG}" --log-flush-seconds "${LOG_FLUSH_SECONDS}"
+    else
+      python experiments/run_suite.py --suite experiments/suites/paper_suite.json --out paper/results --seed "${SEED}" --fixed-seed --no-quiet --progress --log-file "${LOG}" --log-flush-seconds "${LOG_FLUSH_SECONDS}"
+    fi
   fi
 fi
 
