@@ -3,12 +3,13 @@
 \caption{Ablation Study (vs. BasicAgent, $N$=120 games each)}
 \label{table_ablation}
 \centering
-\small
-\setlength{\tabcolsep}{4pt}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
 \renewcommand{\arraystretch}{1.05}
-\begin{tabular}{|p{2.7cm}|c|c|c|}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{p{2.3cm}ccc}
 \hline
-\textbf{Variant} & \textbf{Win Rate} & \textbf{Avg. Time (s)} & \textbf{Over-180s Rate} \\
+\textbf{Variant} & \textbf{WR} & \textbf{Avg. (s)} & \textbf{Over-180s} \\
 \hline
 Ghost Ball Only & 82.5\% & 14.8 & 0.0\% \\
 Full System & 87.5\% & 18.6 & 0.0\% \\
@@ -18,4 +19,5 @@ w/o Strategy/Safety & 81.7\% & 24.0 & 0.0\% \\
 w/o Catastrophic Penalty & 90.0\% & 18.9 & 0.0\% \\
 \hline
 \end{tabular}
+}%
 \end{table}

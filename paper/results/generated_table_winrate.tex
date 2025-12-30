@@ -3,15 +3,17 @@
 \caption{Win Rate Summary ($N$=120 games per matchup)}
 \label{table_winrate}
 \centering
-\small
-\setlength{\tabcolsep}{4pt}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
 \renewcommand{\arraystretch}{1.05}
-\begin{tabular}{|l|c|c|c|}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccc}
 \hline
-\textbf{Matchup} & \textbf{Win Rate} & \textbf{Avg. Time (s)} & \textbf{Over-180s Rate} \\
+\textbf{Ours vs.} & \textbf{WR} & \textbf{Avg. (s)} & \textbf{Over-180s} \\
 \hline
-NewAgent vs. BasicAgent & 87.5\% & 18.6 & 0.0\% \\
-NewAgent vs. BasicAgentPro & 50.8\% & 49.3 & 0.8\% \\
+Basic & 87.5\% & 18.6 & 0.0\% \\
+BasicPro & 50.8\% & 49.3 & 0.8\% \\
 \hline
 \end{tabular}
+}%
 \end{table}

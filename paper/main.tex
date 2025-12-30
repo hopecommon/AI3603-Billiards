@@ -83,7 +83,7 @@ Geometric-Guided Evolution Strategy for Time-Constrained 8-Ball Pool AI
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \begin{abstract}
 
-Designing autonomous agents for complex physical environments with continuous action spaces remains a fundamental challenge in artificial intelligence. This paper presents a competitive 8-ball pool AI agent that targets the dual requirements of high win rate and strict wall-clock limits. We propose a hybrid pipeline that uses Ghost Ball geometric aiming to generate physically plausible shot candidates and applies Covariance Matrix Adaptation Evolution Strategy (CMA-ES) \cite{hansen2001cma} as a local refinement module when geometry alone is insufficient. The central engineering contribution is a geometric pruning and layered sampling scheme that reduces expensive physics rollouts while explicitly filtering catastrophic fouls under action noise. In our evaluation harness, the final system achieves \FinalWinVsBasic win rate against BasicAgent and \FinalWinVsPro against BasicAgentPro.
+Designing autonomous agents for complex physical environments with continuous action spaces remains a fundamental challenge in artificial intelligence. This paper presents a competitive 8-ball pool AI agent that targets the dual requirements of high win rate and strict wall-clock limits. We propose a hybrid pipeline that uses Ghost Ball geometric aiming to generate physically plausible shot candidates and applies Covariance Matrix Adaptation Evolution Strategy (CMA-ES) \cite{hansen2001cma} as a local refinement module when geometry alone is insufficient. The central engineering contribution is a geometric pruning and layered sampling scheme that reduces expensive physics rollouts while explicitly filtering catastrophic fouls under action noise. In our evaluation harness, the final system achieves \FinalWinVsBasic\ win rate against BasicAgent and \FinalWinVsPro\ against BasicAgentPro.
 
 \end{abstract}
 
@@ -91,9 +91,9 @@ Designing autonomous agents for complex physical environments with continuous ac
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \section{INTRODUCTION}
 
-Autonomous decision-making in complex physical environments has long been a cornerstone challenge in artificial intelligence, with applications spanning robotics, game playing, and industrial automation. Among these domains, billiards presents a particularly compelling testbed: it features continuous action spaces, intricate collision dynamics, long-term strategic planning requirements, and significant environmental noise—all characteristics that stress-test the boundaries of modern AI algorithms.
+Autonomous decision-making in complex physical environments has long been a cornerstone challenge in artificial intelligence, with applications spanning robotics, game playing, and industrial automation. Among these domains, billiards presents a particularly compelling testbed: it features continuous action spaces, intricate collision dynamics, long-term strategic planning requirements, and significant environmental noise—properties that pose a stringent benchmark for decision-making algorithms in continuous, stochastic control.
 
-This paper addresses the specific challenge of designing an AI agent for 8-ball pool that must satisfy two competing objectives: achieving high win rates against competent opponents while adhering to strict computational time constraints (less than 3 minutes per game). This dual requirement mirrors real-world scenarios where intelligent systems must balance decision quality with operational efficiency, such as autonomous vehicles making split-second navigation decisions or robotic manipulators performing time-sensitive industrial tasks.
+This paper addresses the specific challenge of designing an AI agent for 8-ball pool that must satisfy two competing objectives: achieving high win rates against competent opponents while operating under tight computational constraints (a nominal reference budget of about 180\,s per game on average). This dual requirement mirrors real-world scenarios where intelligent systems must balance decision quality with operational efficiency, such as autonomous vehicles making split-second navigation decisions or robotic manipulators performing time-sensitive industrial tasks.
 
 \subsection{Challenges}
 
@@ -105,6 +105,8 @@ The 8-ball pool domain presents several fundamental challenges:
 
 \textbf{Environmental Noise:} Following real-world billiards, the simulator introduces Gaussian noise ($\sigma = 0.1$) to all action parameters, making outcome prediction inherently stochastic. Agents must be robust to this uncertainty.
 
+\textbf{Sparse and Discontinuous Rewards:} Most randomly sampled shots produce no pocketed balls and may trigger fouls; useful feedback is sparse and highly non-smooth due to pot-or-fail outcomes under stochastic action noise.
+
 \textbf{Long-Term Strategic Planning:} Unlike single-shot optimization, competitive play requires reasoning about defensive positioning, ball sequencing, and opponent threat mitigation—strategic considerations that extend beyond immediate ball potting.
 
 \textbf{Fatal Foul Avoidance:} Certain rule violations (e.g., illegally pocketing the 8-ball, scratching the cue ball simultaneously with the 8-ball) result in instant game loss. Agents must reliably filter out such catastrophic actions even under noise.
@@ -114,15 +116,15 @@ The 8-ball pool domain presents several fundamental challenges:
 This work makes the following contributions:
 
 \begin{enumerate}
-\item \textbf{Geometric-Guided Candidate Generation:} We develop an intelligent Ghost Ball method that generates high-quality shot candidates by exploiting billiards geometry, reducing the candidate pool from 450 to 15 while preserving solution quality—a 30$\times$ speedup in candidate generation.
+\item \textbf{Geometry-Guided Candidate Generation:} We develop a Ghost Ball method that generates high-quality shot candidates by exploiting billiards geometry, reducing the candidate pool from 450 to 15 while preserving solution quality—a 30$\times$ reduction in candidate enumeration.
 
 \item \textbf{Hybrid Optimization Strategy:} We combine Ghost Ball geometric aiming with CMA-ES local optimization, leveraging the strengths of both domain-specific heuristics and general-purpose evolution strategies.
 
 \item \textbf{Layered Sampling with Risk Filtering:} We propose a fast-filter-refine-verify sampling hierarchy that minimizes expensive physics simulations while maintaining high confidence through multi-sample catastrophic foul detection.
 
-\item \textbf{Engineering Evolution Narrative:} We document the evolution from an early heuristic baseline, through a naive evolution-strategy prototype that frequently violated time constraints, to the final balanced architecture, highlighting practical engineering trade-offs.
+\item \textbf{Systematic Ablation Study:} We provide controlled ablations that quantify the contribution of pruning, selective CMA-ES refinement, strategic bonuses, and catastrophic-risk control under the same tournament protocol (Table~\ref{table_ablation}).
 
-\item \textbf{Empirical Validation:} The final agent achieves \FinalWinVsBasic win rate against BasicAgent and \FinalWinVsPro against BasicAgentPro under the course evaluation protocol.
+\item \textbf{Empirical Validation:} The final agent achieves \FinalWinVsBasic\ win rate against BasicAgent and \FinalWinVsPro\ against BasicAgentPro under the course evaluation protocol.
 \end{enumerate}
 
 The remainder of this paper is organized as follows: Section II reviews related work in evolution strategies and billiards AI. Section III formally defines the problem. Section IV details our methodology. Section V narrates the algorithm evolution process. Section VI presents experimental results and ablation studies. Section VII concludes with limitations and future directions.
@@ -145,7 +147,7 @@ Compared with classic board games, billiards introduces noisy continuous control
 
 \subsection{Game Rules: 8-Ball Pool}
 
-We consider standard 8-ball pool rules \cite{bca2020rules}:
+We consider standard 8-ball pool rules \cite{csi2024rules}:
 \begin{itemize}
     \item Two players alternate shots, each assigned either solid balls (1--7) or striped balls (9--15).
     \item Players must legally pocket all their group balls before attempting the 8-ball.
@@ -180,11 +182,11 @@ We define a composite reward $R(\mathbf{a}, \mathbf{s})$ for action $\mathbf{a}$
 R = R_{\text{pot}} + R_{\text{foul}} + R_{\text{strategic}}
 \end{equation}
 where:
-\begin{itemize}
-    \item $R_{\text{pot}} = 50 \cdot N_{\text{own}} - 20 \cdot N_{\text{enemy}} + 100 \cdot I_{\text{legal-8}}$
-    \item $R_{\text{foul}} = -100 \cdot I_{\text{scratch}} - 150 \cdot I_{\text{illegal-8}} - 30 \cdot I_{\text{first-hit}} - 30 \cdot I_{\text{no-rail}}$
-    \item $R_{\text{strategic}} = w_{\text{pos}} \cdot f_{\text{pos}}(\mathbf{s}') + w_{\text{def}} \cdot f_{\text{def}}(\mathbf{s}')$
-\end{itemize}
+	\begin{itemize}
+	    \item $R_{\text{pot}} = 50 \cdot N_{\text{own}} - 20 \cdot N_{\text{enemy}} + 100 \cdot I_{\text{legal-8}}$
+	    \item $R_{\text{foul}} = -100 \cdot I_{\text{scratch}} - 150 \cdot I_{\text{illegal-8}} - 30 \cdot I_{\text{first-hit}} - 30 \cdot I_{\text{no-rail}}$
+	    \item $R_{\text{strategic}} = f_{\text{pos}}(\mathbf{s}') + f_{\text{def}}(\mathbf{s}')$
+	\end{itemize}
 
 Strategic bonuses $f_{\text{pos}}$ and $f_{\text{def}}$ reward positional play (cue ball proximity to next target) and defensive positioning (reducing opponent threat), detailed in Section IV-C.
 
@@ -201,12 +203,12 @@ Strategic bonuses $f_{\text{pos}}$ and $f_{\text{def}}$ reward positional play (
 
 \section{METHODOLOGY}
 
-Our agent architecture combines geometric intelligence with evolution strategies, organized into a six-stage decision pipeline (Fig. 1). This section details each component.
+Our agent architecture combines geometric intelligence with evolution strategies, organized into a six-stage decision pipeline (Fig.~\ref{fig:pipeline}). This section details each component.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.48\textwidth]{figure1_pipeline.pdf}
-\caption{Overall decision pipeline: (1) Ghost Ball candidate generation, (2) fast filtering (1--2 samples), (3) refined evaluation (2--4 samples) with catastrophic foul filtering, (4) selective CMA-ES refinement (triggered when score $< 60$), (5) positional/safety shot planning, and (6) final verification (4--6 samples) with increased sampling in high-risk states.}
+\includegraphics[width=\columnwidth]{figure1_pipeline.pdf}
+\caption{Overall decision pipeline: (1) heuristic/geometric Ghost Ball candidate generation, (2) fast filtering (1--2 rollouts), (3) refined evaluation (2--4 rollouts) with catastrophic foul filtering, (4) selective CMA-ES refinement (triggered only when score $< 60$; otherwise bypassed), (5) positional/safety shot planning, and (6) final verification (4--6 rollouts) with increased sampling in high-risk states.}
 \label{fig:pipeline}
 \end{figure}
 
@@ -218,7 +220,7 @@ The Ghost Ball method provides a geometric approach to candidate generation. For
 \mathbf{p}_{\text{ghost}} = \mathbf{p}_T - 2R \cdot \frac{\mathbf{p}_P - \mathbf{p}_T}{\|\mathbf{p}_P - \mathbf{p}_T\|}
 \end{equation}
 
-where $R = 0.028575$ m is the ball radius, $\mathbf{p}_T$ and $\mathbf{p}_P$ are the 2D positions of target ball and pocket center, and $\mathbf{p}_{\text{ghost}}$ is the virtual "ghost ball" position the cue ball should strike (Fig. 2).
+where $R = 0.028575$ m is the ball radius, $\mathbf{p}_T$ and $\mathbf{p}_P$ are the 2D positions of target ball and pocket center, and $\mathbf{p}_{\text{ghost}}$ is the virtual "ghost ball" position the cue ball should strike (Fig.~\ref{fig:ghostball}).
 
 \begin{figure}[t]
 \centering
@@ -235,14 +237,14 @@ V_0 &= f_{\text{speed}}(\|\mathbf{p}_{\text{ghost}} - \mathbf{p}_{\text{cue}}\|,
 
 where $f_{\text{speed}}$ is an empirical function mapping distances to optimal velocity (e.g., 2.5 m/s for short shots, 4.5 m/s for long shots).
 
-\textbf{Intelligent Pruning:} Naive enumeration over all target balls $\times$ all pockets $\times$ velocity/spin variants yields $\sim$450 candidates per decision. We formalize pruning as a filtering pipeline to construct a reduced candidate set $C_{\text{pruned}} \subset C_{\text{initial}}$:
+\textbf{Heuristic-Guided Pruning:} Naive enumeration over all target balls $\times$ all pockets $\times$ velocity/spin variants yields $\sim$450 candidates per decision. We formalize pruning as a filtering pipeline to construct a reduced candidate set $C_{\text{pruned}} \subset C_{\text{initial}}$:
 
 \begin{enumerate}
     \item \textit{Target prioritization}: Define $T_{\text{sorted}} = \text{Sort}(T_{\text{own}}, \text{by } \|\mathbf{p}_t - \mathbf{p}_{\text{cue}}\|)$. Evaluate only $T_{\text{top}} = T_{\text{sorted}}[:3]$ (nearest 3 balls).
     
     \item \textit{Pocket selection}: For each $t \in T_{\text{top}}$, define pocket set $P_t = \{\arg\min_{p \in \mathcal{P}} \|\mathbf{p}_p - \mathbf{p}_t\|, \arg\min_{p \in \mathcal{P} \setminus \{p_1\}} \|\mathbf{p}_p - \mathbf{p}_t\|\}$ (nearest 2 pockets).
     
-    \item \textit{Path feasibility}: Reject candidate $(t, p)$ if $\exists b \in \mathcal{B} \setminus \{t\}$ such that $\text{dist}(\mathbf{p}_b, \text{ray}(\mathbf{p}_{\text{cue}}, \mathbf{p}_{\text{ghost}})) < 2.5R$, where ray denotes the line segment from cue ball to ghost position.
+    \item \textit{Path feasibility}: Reject candidate $(t, p)$ if $\exists b \in \mathcal{B} \setminus \{t\}$ such that the distance from $\mathbf{p}_b$ to the \emph{segment} $\overline{\mathbf{p}_{\text{cue}}\mathbf{p}_{\text{ghost}}}$ is below $2.5R$, where the projection point is required to fall within the segment endpoints (empirically tuned threshold).
 \end{enumerate}
 
 This reduces candidates to $|C_{\text{pruned}}| \approx 15$ (a 30$\times$ reduction) while retaining high-quality shots. Additional velocity variants $V \in \{0.9V_0, 1.1V_0\}$ and spin configurations $\mathbf{s} \in \{(0,0), (0,\pm0.15)\}$ expand the final set to $\approx$15--20 candidates per decision.
@@ -251,13 +253,14 @@ This reduces candidates to $|C_{\text{pruned}}| \approx 15$ (a 30$\times$ reduct
 
 While Ghost Ball provides excellent initial estimates, collision physics and spin effects create local nonlinearities that geometric methods cannot capture. We employ CMA-ES \cite{hansen2001cma} to refine promising candidates.
 
-CMA-ES maintains a Gaussian search distribution $\mathcal{N}(\mathbf{m}, \sigma^2 \mathbf{C})$, iteratively updating:
+CMA-ES maintains a Gaussian search distribution $\mathcal{N}(\mathbf{m}, \sigma^2 \mathbf{C})$. We provide a simplified description of its mean and covariance adaptation:
 \begin{align}
 \mathbf{m}^{(g+1)} &= \mathbf{m}^{(g)} + \sum_{i=1}^{\mu} w_i \mathbf{x}_i^{(g)} \\
 \mathbf{C}^{(g+1)} &= (1 - c_{\text{cov}}) \mathbf{C}^{(g)} + c_{\text{cov}} \sum_{i=1}^{\mu} w_i (\mathbf{x}_i^{(g)} - \mathbf{m}^{(g)})(\mathbf{x}_i^{(g)} - \mathbf{m}^{(g)})^\top
 \end{align}
 
 where $\mathbf{x}_i^{(g)}$ are ranked samples, $w_i$ are recombination weights, and $c_{\text{cov}}$ is the covariance adaptation rate.
+We refer readers to \cite{hansen2001cma} for the full update rules including step-size control and evolution paths.
 
 \textbf{Time-Aware CMA-ES:} To respect time constraints, we use:
 \begin{itemize}
@@ -289,7 +292,11 @@ where $\text{PotThreat}(b, \mathbf{s}')$ estimates the ease of potting enemy bal
 \text{PotThreat}(b, \mathbf{s}') = \frac{\alpha_{\text{align}}}{1 + \beta_1 d_{\text{cue-ball}} + \beta_2 d_{\text{ball-pocket}}}
 \end{equation}
 
-$\alpha_{\text{align}} \in [0,1]$ measures alignment between cue-to-ball and ball-to-pocket vectors (higher when vectors are collinear). Constants $w_{\text{def}}$, $\beta_1$, and $\beta_2$ are empirically tuned (see Section VI-A).
+$\alpha_{\text{align}} \in [0,1]$ measures alignment between cue-to-ball and ball-to-pocket directions, defined as the cosine similarity
+\begin{equation}
+\alpha_{\text{align}} = \max\left(0, \hat{\mathbf{u}}_{\text{cue}\rightarrow b}^\top \hat{\mathbf{u}}_{b\rightarrow p}\right)
+\end{equation}
+where $\hat{\mathbf{u}}_{\text{cue}\rightarrow b}$ and $\hat{\mathbf{u}}_{b\rightarrow p}$ are unit vectors. Constants $w_{\text{def}}$, $\beta_1$, and $\beta_2$ are empirically tuned (see Section VI-A).
 
 \textbf{Safety Shot Planning:} When aggressive potting has low expected reward (threshold determined experimentally), we invoke a \textit{positional shot planner} that generates candidates emphasizing legal contact and favorable cue ball placement, even without potting. This is particularly critical in cluttered table configurations or when the 8-ball is dangerously close to pockets.
 
@@ -309,13 +316,14 @@ If any candidate exhibits $f_{\text{catastrophic}} > 0$ in any sample during fil
 \textbf{Fallback Mechanism:} If all candidates are rejected due to catastrophic fouls, invoke the \textit{contact fallback generator} that produces conservative shots guaranteeing legal first contact with minimal velocity (1.8--2.4 m/s), aimed at nearest own-group balls with small angle perturbations ($\pm 2^\circ$).
 
 \begin{algorithm}
+\footnotesize
 \caption{Hybrid Geometric-Evolutionary Decision Pipeline}
 \label{alg:decision}
 \begin{algorithmic}[1]
 \Require Table state $\mathbf{s}$ (ball positions), own-group targets $T$, per-shot budget $t_{\max}$
 \Ensure Action $\mathbf{a}^* = (V_0, \phi, \theta, a, b)$
 
-\State \textbf{Stage 1: Intelligent Ghost Ball Generation}
+\State \textbf{Stage 1: Heuristic-Guided Ghost Ball Generation}
 \State $C \gets \emptyset$ \Comment{Candidate pool}
 \State $B_{\text{sorted}} \gets$ Sort($T$, by distance to cue ball) \Comment{Prioritize}
 \For{$b \in B_{\text{sorted}}[:3]$} \Comment{Top 3 targets only}
@@ -390,7 +398,7 @@ This section narrates the \textit{three core milestones} of our agent, while tre
 
 	\textbf{Results:} The measured performance corresponds to the \textit{Ghost Ball Only} row in Table~\ref{table_ablation}.
 
-	\textbf{Analysis:} Pure geometry provides strong candidate quality, but remains brittle under simulator stochasticity and does not explicitly manage risk or positioning.
+\textbf{Analysis:} While computationally efficient, pure geometric approaches lack robustness against stochastic perturbations in the simulator dynamics and do not explicitly manage risk or positioning.
 
 \textbf{Key Lesson:} \textit{Geometry is a strong prior for candidate generation, but needs robustness mechanisms under noise.}
 
@@ -407,7 +415,9 @@ This section narrates the \textit{three core milestones} of our agent, while tre
 
 	\textbf{Analysis:} This milestone establishes the main compute/quality Pareto point: pruning improves throughput, and selective CMA-ES allocates extra compute only to hard decisions.
 
-\textbf{Key Lesson:} \textit{Spend simulator calls on a small, high-quality candidate set; refine locally only when needed.}
+\textbf{Key Lesson:} \textit{Allocate the limited computational budget primarily to a refined set of high-quality candidates, and refine locally only when needed.}
+
+\textbf{Failed Attempt (Naive CMA-ES Without Pruning):} Before introducing pruning and layered evaluation, we experimented with applying CMA-ES more broadly (larger candidate pools and more frequent refinement). This quickly became impractical because each fitness evaluation requires an expensive stochastic rollout. The ablation ``w/o Geometric Pruning'' quantifies this bottleneck: removing pruning increases the average game time to 74.0\,s and raises the over-budget rate to 4.2\% (Table~\ref{table_ablation}), even though it retains the rest of the pipeline. This evidence supports our core design choice: geometric pruning is necessary to make evolutionary refinement feasible under real-time constraints.
 
 \subsection{Milestone 3: Final System (Risk Control + Strategy/Safety)}
 
@@ -421,7 +431,7 @@ This section narrates the \textit{three core milestones} of our agent, while tre
     \item Adaptive verification: increase samples for high-risk states (8-ball near pockets)
 \end{itemize}
 
-	\textbf{Results:} The final system corresponds to the \textit{Full System} row in Table~\ref{table_ablation} and achieves \FinalWinVsPro against BasicAgentPro in Table~\ref{table_winrate}.
+	\textbf{Results:} The final system corresponds to the \textit{Full System} row in Table~\ref{table_ablation} and achieves \FinalWinVsPro\ against BasicAgentPro in Table~\ref{table_winrate}.
 
 	\textbf{Analysis:} These additions reduce high-variance failure modes under noise (illegal 8-ball and cue+8 scratch) and improve stability in difficult layouts by switching to safety/positional play.
 
@@ -435,7 +445,7 @@ Beyond the three milestones, we performed targeted micro-optimizations (threshol
 
 The final agent combines:
 \begin{enumerate}
-    \item Intelligent Ghost Ball generation (15 candidates)
+    \item Heuristic/Geometric Ghost Ball generation (15 candidates)
     \item Layered filtering (1 $\rightarrow$ 2 $\rightarrow$ 4 samples)
     \item Selective CMA-ES refinement (top-1 if score $< 60$)
     \item Strategic bonus evaluation (positional + defensive)
@@ -466,11 +476,13 @@ This pipeline achieves a Pareto-optimal balance between win rate and decision ti
 
 \textbf{Evaluation Protocol:} Following the course project guidelines, we conduct $N$-game tournaments with 4-round rotation (each agent plays as both starting player and both ball groups). Win conditions: legal 8-ball pot or opponent foul. Metrics: win rate and wall-clock game time recorded by the evaluation script.
 
+\textbf{Tournament Size:} Unless otherwise noted, we set $N=120$ games per matchup (as reflected in Table~\ref{table_winrate} and Table~\ref{table_ablation}).
+
 \textbf{Hardware:} Intel Xeon Gold 6248R CPU (3.0 GHz), 64 GB RAM, Ubuntu 22.04, Python 3.13.
 
 \textbf{Hyperparameters:} Table \ref{table:hyperparams} lists the empirically tuned hyperparameters used throughout experiments. These values were determined through targeted tuning during Milestones 2--3 development (Section V).
 
-\begin{table}[h]
+\begin{table}[t]
 \caption{Key Hyperparameters (Empirically Tuned)}
 \label{table:hyperparams}
 \begin{center}
@@ -506,10 +518,12 @@ Table~\ref{table_winrate} summarizes win rates across opponents.
 
 \textbf{Key Observations:}
 \begin{itemize}
-    \item The final agent achieves \FinalWinVsBasic vs. BasicAgent and \FinalWinVsPro vs. BasicAgentPro under the same rotation protocol.
-    \item Against BasicAgentPro, the average wall-clock game time is \FinalAvgTimeVsPro\,s with over-180s rate \FinalOverBudgetVsPro (180s is a reference budget, not a strict per-game cutoff).
+    \item The final agent achieves \FinalWinVsBasic\ vs.\ BasicAgent and \FinalWinVsPro\ vs.\ BasicAgentPro under the same rotation protocol.
+    \item Against BasicAgentPro, the average wall-clock game time is \FinalAvgTimeVsPro\,s with over-180s rate \FinalOverBudgetVsPro\ (180s is a reference budget, not a strict per-game cutoff).
     \item The result gap between BasicAgent and BasicAgentPro highlights the importance of robustness to stochastic rollouts and endgame foul avoidance.
 \end{itemize}
+
+\textbf{Qualitative Failure Modes vs.\ BasicAgentPro:} In losses against BasicAgentPro, we observed two dominant patterns: (i) high-variance endgame situations where small action noise can trigger instant-loss fouls, and (ii) positional errors that leave the opponent an easy clearance sequence. This motivates the catastrophic-risk control and safety/positional planning modules.
 
 \subsection{Time Performance Analysis}
 
@@ -533,10 +547,10 @@ To isolate each component's contribution, we run ablations by disabling one modu
 
 \textbf{Analysis:}
 \begin{itemize}
-    \item Geometric pruning is essential for wall-clock feasibility under the 180s reference budget (see the over-180s column in Table~\ref{table_ablation}).
+    \item Geometric pruning is essential for wall-clock feasibility: as shown in the \textit{Over-180s Rate} column of Table~\ref{table_ablation}, removing pruning substantially increases over-budget games.
     \item Selective CMA-ES refinement improves win rate at a moderate runtime cost; disabling it reduces compute but also reduces decision quality.
     \item Strategy/safety terms stabilize play in low-reward states by preferring low-variance shots, especially when the 8-ball is close to a pocket.
-    \item Catastrophic-foul control directly targets instant-loss outcomes (illegal 8-ball potting and cue+8 scratch), improving reliability under action noise.
+    \item Catastrophic-foul control prevents instant-loss fouls (illegal 8-ball potting; cue+8 scratch), improving robustness to action noise.
 \end{itemize}
 
 \textbf{Synergy Effect:} The full system outperforms the sum of isolated components, indicating beneficial interactions (e.g., pruning + CMA-ES is more effective than either alone; strategic bonuses + safety planner reinforce defensive play).
@@ -545,12 +559,12 @@ To isolate each component's contribution, we run ablations by disabling one modu
 
 Figure 5 illustrates a representative decision scenario where our agent's hybrid approach succeeds.
 
-\begin{figure*}[t]
+\begin{figure}[t]
 \centering
-\includegraphics[width=0.9\textwidth]{figure5_case_study.pdf}
+\includegraphics[width=\columnwidth]{figure5_case_study.pdf}
 \caption{Case study visualization: a critical state where naive potting may expose catastrophic risk (8-ball near pocket). Ghost Ball provides an initial feasible aim, and selective CMA-ES refines shot parameters to improve robustness under action noise while favoring a safer cue-ball outcome.}
 \label{fig:casestudy}
-\end{figure*}
+\end{figure}
 
 \textbf{Scenario:} 3 own-group balls remain, opponent has 2 easy shots, 8-ball is 12 cm from corner pocket (high-risk zone).
 
@@ -568,7 +582,7 @@ Figure 5 illustrates a representative decision scenario where our agent's hybrid
 
 This paper presented a hybrid geometric-evolutionary approach to time-constrained 8-ball pool AI, demonstrating that domain-specific structural knowledge can dramatically accelerate black-box optimization without sacrificing decision quality. Through iterative engineering toward a within-time-budget architecture, we illustrated the trade-offs inherent in real-time intelligent systems.
 
-Our key contributions include: (1) intelligent Ghost Ball pruning reducing candidates by 30$\times$, (2) selective CMA-ES refinement applied only when necessary, (3) catastrophic-risk control targeting instant-loss fouls, and (4) strategic bonuses encoding positional and defensive reasoning. Under the course evaluation protocol, the final agent achieves \FinalWinVsBasic win rate against BasicAgent and \FinalWinVsPro against BasicAgentPro (Table~\ref{table_winrate}).
+Our key contributions include: (1) intelligent Ghost Ball pruning reducing candidates by 30$\times$, (2) selective CMA-ES refinement applied only when necessary, (3) catastrophic-risk control targeting instant-loss fouls, and (4) strategic bonuses encoding positional and defensive reasoning. Under the course evaluation protocol, the final agent achieves \FinalWinVsBasic\ win rate against BasicAgent and \FinalWinVsPro\ against BasicAgentPro (Table~\ref{table_winrate}).
 
 Ablation studies confirmed that each component contributes meaningfully, with synergistic effects when combined. Particularly, geometric pruning proves to be the critical enabler, allowing expensive evolution strategies to be applied selectively rather than exhaustively.
 
@@ -630,7 +644,7 @@ In summary, this work demonstrates that intelligent integration of domain knowle
 
 \section*{ACKNOWLEDGMENT}
 
-The author thanks the AI3603 course staff at Shanghai Jiao Tong University for providing the Pooltool simulation environment and baseline agents. Special thanks to the developers of the Pooltool library for maintaining an open-source, high-fidelity billiards physics engine. This work was completed independently as part of the course project requirements.
+The authors thank the AI3603 course staff at Shanghai Jiao Tong University for providing the Pooltool simulation environment and baseline agents. Special thanks to the developers of the Pooltool library for maintaining an open-source, high-fidelity billiards physics engine. This project was completed collaboratively by a two-person team; this manuscript is submitted as an individual course report with the division of labor stated above.
 
 
 

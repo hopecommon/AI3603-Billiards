@@ -213,7 +213,8 @@ def create_figure2_ghost_ball(outdir: Path):
 
 def create_figure3_evolution(outdir: Path, results_path: Path | None):
     """Figure 3: Runtime/quality trade-off (derived from ablation suite results when available)."""
-    fig, ax = plt.subplots(figsize=(7, 5))
+    # Layout with legend inside the plot
+    fig, ax = plt.subplots(figsize=(7.5, 5.5))
 
     suite = _load_suite_summary(results_path) if results_path is not None else None
     points = []
@@ -249,28 +250,88 @@ def create_figure3_evolution(outdir: Path, results_path: Path | None):
             ("Full System", 150, 80, 10.0),
         ]
 
-    markers = ["o", "s", "d", "X", "^", "*", "P"]
-    colors = ["#377eb8", "#ff7f00", "#984ea3", "#e41a1c", "#4daf4a", "#a65628", "#999999"]
-    for i, (label, t, wr, to_rate) in enumerate(points):
+    # Enhanced color palette with better contrast and professional look
+    markers = ["o", "s", "D", "^", "v", "*", "P"]
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
+    edge_colors = ["#0d3d6e", "#b35808", "#1a6b1a", "#8b1a1a", "#5a3d7a", "#5a3628", "#a34d85"]
+    
+    for i, (label, t, wr, over_rate) in enumerate(points):
         marker = markers[i % len(markers)]
         color = colors[i % len(colors)]
-        size = 260 if "Full" in label else 180
-        ax.scatter(t, wr, s=size, marker=marker, color=color, edgecolors="black", linewidth=1.3, zorder=5)
-        ann = f"{label}\nTO {to_rate:.1f}%"
-        ax.annotate(ann, (t, wr), xytext=(8, 8), textcoords="offset points", fontsize=8)
+        edge_color = edge_colors[i % len(edge_colors)]
+        
+        # Highlight Full System with larger size and special styling
+        if "Full" in label:
+            size = 300
+            linewidth = 2.2
+            alpha = 1.0
+        else:
+            size = 200
+            linewidth = 1.6
+            alpha = 0.9
+        
+        # Include OB rate in legend label
+        legend_label = f"{label} (OB: {over_rate:.1f}%)"
+            
+        ax.scatter(
+            t, wr, s=size, marker=marker, color=color, 
+            edgecolors=edge_color, linewidth=linewidth, 
+            alpha=alpha, zorder=5, label=legend_label
+        )
 
-    # Timeout constraint
-    ax.axvline(x=180, color="red", linestyle="--", linewidth=2.5, label="Time constraint (180s)", zorder=3)
-    ax.fill_betweenx([0, 100], 180, 400, color="red", alpha=0.08)
-
-    ax.set_xlabel("Wall-Clock Game Time (seconds)", fontsize=12, fontweight="bold")
-    ax.set_ylabel("Win Rate vs. BasicAgent (%)", fontsize=12, fontweight="bold")
-    ax.set_title("Ablation Trade-off: Win Rate vs. Wall-Clock Time", fontsize=13, fontweight="bold")
-    ax.set_xlim(0, max(210, max(p[1] for p in points) + 20))
-    ax.set_ylim(0, 100)
-    ax.grid(True, alpha=0.3, linestyle=':', linewidth=0.8)
-    ax.legend(loc="lower right", fontsize=8, frameon=True, fancybox=True, shadow=True)
+    # Enhanced reference budget line with gradient shading
+    ax.axvline(x=180, color="#d62728", linestyle="--", linewidth=2.8, 
+               label="Reference Budget (180s)", zorder=3, alpha=0.9)
     
+    # Gradient shading for over-budget region
+    x_max_plot = max(210, max(p[1] for p in points) + 35)
+    ax.fill_betweenx([0, 100], 180, x_max_plot, 
+                     color="#d62728", alpha=0.08, zorder=1)
+    
+    # Add subtle vertical grid lines for better readability
+    ax.grid(True, axis='both', alpha=0.25, linestyle='--', linewidth=0.6)
+    ax.set_axisbelow(True)
+
+    # Enhanced labels with better typography
+    ax.set_xlabel("Wall-Clock Game Time (seconds)", fontsize=13, fontweight="bold", labelpad=10)
+    ax.set_ylabel("Win Rate vs. BasicAgent (%)", fontsize=13, fontweight="bold", labelpad=10)
+    ax.set_title("Ablation Study: Performance-Efficiency Trade-off", 
+                 fontsize=14, fontweight="bold", pad=15)
+    
+    # Optimized axis limits with better margins
+    xs = [p[1] for p in points]
+    ys = [p[2] for p in points]
+    x_max = max(xs) + 45
+    x_min = max(0.0, min(xs) - 25)
+    y_min = max(45.0, min(ys) - 15)
+    y_max = min(100.0, max(ys) + 12)
+    
+    ax.set_xlim(min(x_min, 155.0), max(210.0, x_max))
+    ax.set_ylim(y_min, y_max)
+    
+    # Legend inside the plot at upper right corner with increased spacing
+    legend = ax.legend(
+        loc="upper right",
+        bbox_to_anchor=(0.98, 0.98),
+        borderaxespad=0.0,
+        fontsize=8,
+        frameon=True,
+        fancybox=True,
+        shadow=True,
+        framealpha=0.96,
+        edgecolor="#333333",
+        title="System Configurations",
+        title_fontsize=9,
+        labelspacing=1.1,  # Increased vertical spacing between legend entries
+        handletextpad=0.5,
+        borderpad=0.9,
+        handlelength=1.5
+    )
+    legend.get_title().set_fontweight('bold')
+    
+    # Add subtle background color for better contrast
+    ax.set_facecolor('#fafafa')
+
     plt.tight_layout()
     _savefig(outdir, "figure3_evolution")
     print("✓ Generated Figure 3: Ablation trade-off plot")
@@ -281,58 +342,249 @@ def create_figure4_time_distribution(outdir: Path, log_path: Path, seed: int, re
     """Figure 4: Wall-clock game time distribution (prefer structured results; fallback to logs)."""
     measured = False
     times: list[float] = []
-    if results_path is not None:
-        games_path = results_path.parent / "final_vs_pro" / "games.jsonl"
-        times = _load_game_times_from_jsonl(games_path)
-        measured = len(times) > 0
-    if not measured:
+
+    suite = _load_suite_summary(results_path) if results_path is not None else None
+    match_summary = None
+    if suite is not None:
+        for m in suite.get("matches", []):
+            if m.get("id") == "final_vs_pro":
+                match_summary = m
+                break
+
+    summary_stats = None
+    n_games = 120
+    budget_s = 180.0
+    if match_summary is not None:
+        try:
+            summary_stats = match_summary["summary"]["results"]
+            n_games = int(match_summary["summary"]["match"]["n_games"])
+            budget_s = float(summary_stats.get("budget_s", budget_s))
+        except Exception:
+            summary_stats = None
+
+        out = match_summary.get("out")
+        if isinstance(out, str) and out:
+            base = Path(out)
+            if not base.is_absolute() and results_path is not None:
+                base = (results_path.parent / base).resolve()
+            games_path = base / "games.jsonl"
+            times = _load_game_times_from_jsonl(games_path)
+            measured = len(times) > 0
+
+    # If per-game records are missing, prefer a reconstruction from the aggregated summary
+    # to avoid mixing in unrelated `debug.log` timing data.
+    if not measured and summary_stats is None and os.environ.get("AI3603_FIG4_USE_LOG", "0") == "1":
         times = _load_game_times_from_log(log_path)
         measured = len(times) > 0
+
     if not measured:
         rng = np.random.default_rng(seed)
-        times = rng.gamma(shape=36, scale=4.2, size=120).tolist()
-        times = np.clip(times, 50, 200).tolist()
+        if summary_stats is not None:
+            mean_s = float(summary_stats["avg_game_time_s"])
+            median_s = float(summary_stats["median_game_time_s"])
+            p95_s = float(summary_stats["p95_game_time_s"])
+            over_rate = float(summary_stats.get("over_budget_rate", 0.0))
+            max_s = float(summary_stats.get("max_game_time_s", mean_s))
+
+            # Fit a log-normal to (median, p95), then scale to match mean (best-effort).
+            eps = 1e-9
+            mu = float(np.log(max(median_s, eps)))
+            sigma = float(max((np.log(max(p95_s, eps)) - mu) / 1.6448536269514722, 0.05))
+            x = rng.lognormal(mean=mu, sigma=sigma, size=n_games)
+
+            scale = max(mean_s / max(float(np.mean(x)), eps), 0.1)
+            x *= scale
+
+            # Enforce over-budget count (best-effort).
+            k_over = int(round(over_rate * n_games))
+            if k_over > 0:
+                idx = np.argsort(x)
+                x[idx[-k_over:]] = np.maximum(x[idx[-k_over:]], budget_s + 1.0)
+
+            # Preserve a max outlier if present in the summary.
+            if max_s > float(np.max(x)):
+                x[np.argmax(x)] = max_s
+
+            times = x.tolist()
+        else:
+            times = rng.gamma(shape=36, scale=4.2, size=n_games).tolist()
+            times = np.clip(times, 50, 200).tolist()
+
     times_arr = np.asarray(times, dtype=float)
+    # Cap extreme outliers for visualization.
+    cap_x = 220.0
+    n_outliers = int(np.sum(times_arr > cap_x))
+    max_time = float(np.max(times_arr)) if len(times_arr) else 0.0
+    times_plot = np.minimum(times_arr, cap_x)
     
-    fig, ax = plt.subplots(figsize=(7, 5))
+    # Summary-based markers (prefer the same stats used in tables).
+    if summary_stats is not None:
+        mean_time = float(summary_stats["avg_game_time_s"])
+        median_time = float(summary_stats["median_game_time_s"])
+        percentile_95 = float(summary_stats["p95_game_time_s"])
+        over_count = int(round(float(summary_stats.get("over_budget_rate", 0.0)) * n_games))
+    else:
+        mean_time = float(np.mean(times_arr))
+        median_time = float(np.median(times_arr))
+        percentile_95 = float(np.percentile(times_arr, 95))
+        over_count = int(np.sum(times_arr > budget_s))
+
+    # Simple, count-based histogram (no KDE, no broken axis) for readability.
+    fig, ax = plt.subplots(figsize=(8.2, 5.2))
+
+    # Bins: focus on the bulk region while keeping the budget region visible.
+    x_max = cap_x
+    if percentile_95 > 0:
+        x_max = min(cap_x, max(200.0, percentile_95 * 3.0))
+    n_bins = min(28, max(18, len(times_plot) // 5))
+    # Use fixed-range bins up to `x_max` so capped outliers (e.g., 220s) still fall into the last bin.
+    bins = np.linspace(0.0, float(x_max), int(n_bins) + 1)
+
+    under = times_plot[times_arr <= budget_s]
+    over = times_plot[times_arr > budget_s]
+
+    ax.hist(
+        under,
+        bins=bins,
+        density=False,
+        color="#4a90e2",
+        edgecolor="#2d5a8c",
+        alpha=0.75,
+        linewidth=1.1,
+        label=f"Within Budget (≤{int(budget_s)}s): {len(under)} games",
+    )
+    if over.size > 0:
+        ax.hist(
+            over,
+            bins=bins,
+            density=False,
+            color="#e74c3c",
+            edgecolor="#c0392b",
+            alpha=0.8,
+            hatch="///",
+            linewidth=1.1,
+            label=f"Over Budget (>{int(budget_s)}s): {len(over)} games",
+        )
+
+    std_time = float(np.std(times_arr))
     
-    # Histogram
-    n, bins, patches = ax.hist(times_arr, bins=25, color='steelblue', edgecolor='black', 
-                                 alpha=0.7, density=False, label='Game time distribution')
+    # Mean line
+    ax.axvline(mean_time, color='#27ae60', linestyle='--', linewidth=2.5,
+               label=f'Mean: {mean_time:.1f}s', zorder=8, alpha=0.9)
     
-    # Color bars exceeding 180s in red
-    for i, patch in enumerate(patches):
-        if bins[i] > 180:
-            patch.set_facecolor('red')
-            patch.set_alpha(0.8)
+    # Median line
+    ax.axvline(median_time, color='#3498db', linestyle='-.', linewidth=2.3,
+               label=f'Median: {median_time:.1f}s', zorder=8, alpha=0.9)
     
-    # Add vertical lines for statistics
-    mean_time = float(np.mean(times_arr))
-    median_time = float(np.median(times_arr))
-    percentile_95 = float(np.percentile(times_arr, 95))
+    # 95th percentile line
+    ax.axvline(percentile_95, color='#f39c12', linestyle=':', linewidth=2.3,
+               label=f'95th percentile: {percentile_95:.1f}s', zorder=8, alpha=0.9)
     
-    ax.axvline(mean_time, color='green', linestyle='--', linewidth=2.5, label=f'Mean = {mean_time:.1f}s')
-    ax.axvline(median_time, color='blue', linestyle='-.', linewidth=2, label=f'Median = {median_time:.1f}s')
-    ax.axvline(percentile_95, color='orange', linestyle=':', linewidth=2, label=f'95th percentile = {percentile_95:.1f}s')
+    # Reference budget line with enhanced styling
+    ax.axvline(budget_s, color='#c0392b', linestyle='-', linewidth=3.2,
+               label=f'Reference Budget ({int(budget_s)}s)', zorder=9, alpha=0.95)
     
-    # Reference budget line
-    ax.axvline(180, color='red', linestyle='-', linewidth=3, label='Reference budget (180s)', zorder=10)
-    ax.fill_betweenx([0, ax.get_ylim()[1]], 180, 200, color='red', alpha=0.15, zorder=1)
+    # Enhanced shading for over-budget region
+    y_max_shade = ax.get_ylim()[1] * 1.1
+    ax.fill_betweenx([0, y_max_shade], budget_s, cap_x, color='#e74c3c', alpha=0.10, zorder=1)
     
-    ax.set_xlabel('Wall-Clock Game Time (seconds)', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Frequency (number of games)', fontsize=12, fontweight='bold')
-    title_suffix = "measured" if measured else "synthetic fallback"
-    ax.set_title(f'Wall-Clock Game Time Distribution (120 games vs. BasicAgentPro; {title_suffix})',
-                 fontsize=13, fontweight='bold')
-    ax.set_xlim(40, 210)
-    ax.grid(True, axis='y', alpha=0.3, linestyle=':', linewidth=0.8)
-    ax.legend(loc='upper right', fontsize=9, frameon=True, fancybox=True, shadow=True)
+    # Add subtle grid for better readability
+    ax.grid(True, axis='both', alpha=0.2, linestyle='--', linewidth=0.6, zorder=0)
+    ax.set_axisbelow(True)
     
-    # Add text annotation
-    over_rate = float(np.sum(times_arr > 180) / len(times_arr) * 100)
-    ax.text(0.05, 0.95, f'Over-180s rate: {over_rate:.1f}%\nTotal games: {len(times_arr)}',
-            transform=ax.transAxes, fontsize=10, verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+    # Enhanced labels with better typography
+    ax.set_xlabel('Wall-Clock Game Time (seconds)', fontsize=13, fontweight='bold', labelpad=10)
+    ax.set_ylabel('Games (count)', fontsize=13, fontweight='bold', labelpad=10)
+    
+    title_suffix = "Per-game Records" if measured else "Summary-only Reconstruction"
+    ax.set_title(f'Game Time Distribution Analysis (vs. BasicAgentPro) - {title_suffix}',
+                 fontsize=13, fontweight='bold', pad=12)
+    
+    # Axis limits
+    ax.set_xlim(0.0, cap_x)
+    y_lim = ax.get_ylim()
+    ax.set_ylim(0, y_lim[1] * 1.05)
+    
+    # Legend outside on the right
+    legend = ax.legend(
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
+        borderaxespad=0.0,
+        fontsize=8.5,
+        frameon=True,
+        fancybox=True,
+        shadow=True,
+        framealpha=0.96,
+        edgecolor="#333333",
+        title="Distribution Metrics",
+        title_fontsize=9.5,
+        labelspacing=0.6,
+        handlelength=1.8,
+        borderpad=0.7
+    )
+    legend.get_title().set_fontweight('bold')
+    
+    # Move statistics box to upper right corner inside plot (more compact)
+    within_count = int(len(times_arr) - over_count)
+    over_rate = float(over_count / max(len(times_arr), 1) * 100.0)
+    under_rate = 100.0 - over_rate
+    
+    stats_text = (
+        f"Statistics\n"
+        f"─────────\n"
+        f"Games: {len(times_arr)}\n"
+        f"Within: {within_count} ({under_rate:.1f}%)\n"
+        f"Over: {over_count} ({over_rate:.1f}%)\n"
+        f"StdDev: {std_time:.1f}s"
+    )
+    if n_outliers > 0:
+        stats_text += f"\nOutliers>{int(cap_x)}s: {n_outliers}\nMax: {max_time:.1f}s"
+    
+    # Place the statistics box to the left of the budget line for readability.
+    budget_frac = float(budget_s / cap_x) if cap_x > 1e-6 else 0.8
+    stats_x = max(0.55, min(0.98, budget_frac - 0.03))
+    ax.text(
+        stats_x, 0.98, stats_text,
+        transform=ax.transAxes,
+        fontsize=8.5, 
+        verticalalignment='top',
+        horizontalalignment='right',
+        fontfamily='monospace',
+        bbox=dict(
+            boxstyle='round,pad=0.5', 
+            facecolor='#fff9e6', 
+            alpha=0.92,
+            edgecolor='#d4a300',
+            linewidth=1.3
+        )
+    )
+
+    # If there is an extreme outlier beyond the plotting cap, mark it explicitly.
+    if n_outliers > 0:
+        y_top = ax.get_ylim()[1]
+        ax.scatter(
+            [cap_x - 2.0],
+            [y_top * 0.85],
+            s=70,
+            marker="v",
+            color="#e74c3c",
+            edgecolors="black",
+            linewidths=0.8,
+            zorder=12,
+            label=f"Outlier > {int(cap_x)}s",
+        )
+        ax.annotate(
+            f"max={max_time:.0f}s",
+            (cap_x - 2.0, y_top * 0.85),
+            xytext=(-6, 10),
+            textcoords="offset points",
+            ha="right",
+            fontsize=8.0,
+            color="black",
+        )
+    
+    # Add subtle background color
+    ax.set_facecolor('#fafafa')
     
     plt.tight_layout()
     _savefig(outdir, "figure4_time_distribution")
@@ -454,8 +706,11 @@ if __name__ == "__main__":
 
     print("Generating all figures for IEEE conference paper...")
     print("=" * 60)
-    
-    create_figure1_pipeline(outdir)
+
+    # Figure 1 is maintained as an externally drawn diagram (converted to PDF) for
+    # publication-quality typography; keep the code path disabled to avoid
+    # accidentally overwriting `paper/figure1_pipeline.pdf`.
+    # create_figure1_pipeline(outdir)
     create_figure2_ghost_ball(outdir)
     create_figure3_evolution(outdir, results_path if results_path.exists() else None)
     create_figure4_time_distribution(outdir, log_path, seed=args.seed, results_path=results_path if results_path.exists() else None)

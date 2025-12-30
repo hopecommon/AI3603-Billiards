@@ -87,17 +87,19 @@ def main() -> int:
             f"\\caption{{Win Rate Summary ($N$={int(final_basic['n_games'])} games per matchup)}}",
             "\\label{table_winrate}",
             "\\centering",
-            "\\small",
-            "\\setlength{\\tabcolsep}{4pt}",
+            "\\scriptsize",
+            "\\setlength{\\tabcolsep}{3pt}",
             "\\renewcommand{\\arraystretch}{1.05}",
-            "\\begin{tabular}{|l|c|c|c|}",
+            "\\resizebox{\\columnwidth}{!}{%",
+            "\\begin{tabular}{lccc}",
             "\\hline",
-            "\\textbf{Matchup} & \\textbf{Win Rate} & \\textbf{Avg. Time (s)} & \\textbf{Over-180s Rate} \\\\",
+            "\\textbf{Ours vs.} & \\textbf{WR} & \\textbf{Avg. (s)} & \\textbf{Over-180s} \\\\",
             "\\hline",
-            f"NewAgent vs. BasicAgent & {_fmt_pct(final_basic['win_rate'])} & {_fmt_s(final_basic['avg_time_s'])} & {_fmt_pct(final_basic['over_budget_rate'])} \\\\",
-            f"NewAgent vs. BasicAgentPro & {_fmt_pct(final_pro['win_rate'])} & {_fmt_s(final_pro['avg_time_s'])} & {_fmt_pct(final_pro['over_budget_rate'])} \\\\",
+            f"Basic & {_fmt_pct(final_basic['win_rate'])} & {_fmt_s(final_basic['avg_time_s'])} & {_fmt_pct(final_basic['over_budget_rate'])} \\\\",
+            f"BasicPro & {_fmt_pct(final_pro['win_rate'])} & {_fmt_s(final_pro['avg_time_s'])} & {_fmt_pct(final_pro['over_budget_rate'])} \\\\",
             "\\hline",
             "\\end{tabular}",
+            "}%",
             "\\end{table}",
         ]
     )
@@ -110,19 +112,20 @@ def main() -> int:
         f"\\caption{{Ablation Study (vs. BasicAgent, $N$={ablation_n_games} games each)}}",
         "\\label{table_ablation}",
         "\\centering",
-        "\\small",
-        "\\setlength{\\tabcolsep}{4pt}",
+        "\\scriptsize",
+        "\\setlength{\\tabcolsep}{3pt}",
         "\\renewcommand{\\arraystretch}{1.05}",
-        "\\begin{tabular}{|p{2.7cm}|c|c|c|}",
+        "\\resizebox{\\columnwidth}{!}{%",
+        "\\begin{tabular}{p{2.3cm}ccc}",
         "\\hline",
-        "\\textbf{Variant} & \\textbf{Win Rate} & \\textbf{Avg. Time (s)} & \\textbf{Over-180s Rate} \\\\",
+        "\\textbf{Variant} & \\textbf{WR} & \\textbf{Avg. (s)} & \\textbf{Over-180s} \\\\",
         "\\hline",
     ]
     for label, m in ablation_rows:
         ablation_lines.append(
             f"{label} & {_fmt_pct(m['win_rate'])} & {_fmt_s(m['avg_time_s'])} & {_fmt_pct(m['over_budget_rate'])} \\\\"
         )
-    ablation_lines += ["\\hline", "\\end{tabular}", "\\end{table}"]
+    ablation_lines += ["\\hline", "\\end{tabular}", "}%", "\\end{table}"]
     _write(outdir / "generated_table_ablation.tex", "\n".join(ablation_lines))
 
     print(f"Wrote `{outdir / 'generated_results.tex'}`")
