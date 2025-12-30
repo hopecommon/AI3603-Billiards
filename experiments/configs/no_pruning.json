@@ -2,8 +2,7 @@
   "use_cma_es": true,
   "max_target_balls": 7,
   "max_pockets_per_ball": 6,
-  "max_ghost_candidates": 180,
+  "max_ghost_candidates": 100,
   "max_speed_variants": 3,
   "max_spin_variants": 5
 }
-
