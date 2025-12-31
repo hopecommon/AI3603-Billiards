@@ -18,19 +18,19 @@
   },
   "results": {
     "wins_by_role": {
-      "agent_a": 27,
-      "agent_b": 93,
+      "agent_a": 18,
+      "agent_b": 102,
       "SAME": 0
     },
-    "win_rate_agent_a": 0.225,
-    "win_rate_agent_b": 0.775,
+    "win_rate_agent_a": 0.15,
+    "win_rate_agent_b": 0.85,
     "draw_rate": 0.0,
     "over_budget_rate": 0.0,
     "budget_s": 180.0,
-    "avg_game_time_s": 26.68507043164154,
-    "median_game_time_s": 20.390050084002723,
-    "p95_game_time_s": 71.03942987499613,
-    "max_game_time_s": 109.21634783299669
+    "avg_game_time_s": 24.649999874658654,
+    "median_game_time_s": 22.71519708300184,
+    "p95_game_time_s": 46.56713900000614,
+    "max_game_time_s": 61.11607683300099
   },
   "environment": {
     "python": "3.10.19",

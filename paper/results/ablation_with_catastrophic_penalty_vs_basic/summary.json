@@ -3,7 +3,7 @@
     "agent_a": "BasicAgent",
     "agent_b": "NewAgent",
     "agent_a_config": null,
-    "agent_b_config": "experiments/configs/no_strategy.json",
+    "agent_b_config": "experiments/configs/with_catastrophic_penalty.json",
     "n_games": 120,
     "target_rotation": [
       "solid",
@@ -18,19 +18,19 @@
   },
   "results": {
     "wins_by_role": {
-      "agent_a": 28,
-      "agent_b": 92,
+      "agent_a": 19,
+      "agent_b": 101,
       "SAME": 0
     },
-    "win_rate_agent_a": 0.23333333333333334,
-    "win_rate_agent_b": 0.7666666666666667,
+    "win_rate_agent_a": 0.15833333333333333,
+    "win_rate_agent_b": 0.8416666666666667,
     "draw_rate": 0.0,
-    "over_budget_rate": 0.008333333333333333,
+    "over_budget_rate": 0.0,
     "budget_s": 180.0,
-    "avg_game_time_s": 29.3658924413161,
-    "median_game_time_s": 18.401442417001817,
-    "p95_game_time_s": 36.51297883299412,
-    "max_game_time_s": 1179.686570542006
+    "avg_game_time_s": 19.794053091658377,
+    "median_game_time_s": 17.35828145800042,
+    "p95_game_time_s": 40.39455133299634,
+    "max_game_time_s": 53.63296883298608
   },
   "environment": {
     "python": "3.10.19",
