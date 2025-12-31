@@ -501,9 +501,12 @@ def create_figure4_time_distribution(outdir: Path, log_path: Path, seed: int, re
     ax.set_xlabel('Wall-Clock Game Time (seconds)', fontsize=13, fontweight='bold', labelpad=10)
     ax.set_ylabel('Games (count)', fontsize=13, fontweight='bold', labelpad=10)
     
-    title_suffix = "Per-game Records" if measured else "Summary-only Reconstruction"
-    ax.set_title(f'Game Time Distribution Analysis (vs. BasicAgentPro) - {title_suffix}',
-                 fontsize=13, fontweight='bold', pad=12)
+    ax.set_title(
+        "Game Time Distribution Analysis (vs. BasicAgentPro)",
+        fontsize=13,
+        fontweight="bold",
+        pad=12,
+    )
     
     # Axis limits
     ax.set_xlim(0.0, cap_x)
@@ -534,9 +537,11 @@ def create_figure4_time_distribution(outdir: Path, log_path: Path, seed: int, re
     over_rate = float(over_count / max(len(times_arr), 1) * 100.0)
     under_rate = 100.0 - over_rate
     
+    source_text = "Source: per-game logs" if measured else "Source: summary reconstruction"
     stats_text = (
         f"Statistics\n"
         f"─────────\n"
+        f"{source_text}\n"
         f"Games: {len(times_arr)}\n"
         f"Within: {within_count} ({under_rate:.1f}%)\n"
         f"Over: {over_count} ({over_rate:.1f}%)\n"

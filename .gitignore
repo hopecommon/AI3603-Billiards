@@ -217,8 +217,6 @@ __marimo__/
 *.log
 *.synctex.gz
 
-# Paper build output (keep figure PDFs/PNGs)
-paper/main.pdf
 
 # Paper experiment artifacts (keep aggregated summary + generated tables/macros)
 paper/results_smoke/

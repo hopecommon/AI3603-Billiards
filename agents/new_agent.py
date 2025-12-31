@@ -300,7 +300,7 @@ class OptimizedNewAgent(Agent):
             
             # ========== 优化后的决策流程 ==========
             
-            # Step 1: 智能生成 Ghost Ball 候选（450→15个）
+            # Step 1: 智能生成 Ghost Ball 候选（≈450→8个）
             t1 = time.time()
             ghost_candidates = self._generate_smart_ghost_candidates(
                 balls, table, prepared_targets

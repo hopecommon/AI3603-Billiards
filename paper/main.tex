@@ -103,7 +103,7 @@ The 8-ball pool domain presents several fundamental challenges:
 
 \textbf{Complex Physical Dynamics:} Accurate shot evaluation requires physics simulation accounting for ball-ball collisions, cushion bounces, friction, and spin effects. Each simulation takes 0.1--0.5 seconds, severely limiting the number of candidate actions that can be evaluated within the time budget.
 
-\textbf{Environmental Noise:} Following real-world billiards, the simulator introduces Gaussian noise ($\sigma = 0.1$) to all action parameters, making outcome prediction inherently stochastic. Noise is applied independently in each action dimension in its native unit (degrees for angles, m/s for speed, and unitless for spin). Agents must be robust to this uncertainty.
+\textbf{Environmental Noise:} Following real-world billiards, the simulator injects i.i.d.\ Gaussian noise to action parameters with standard deviations $(0.1, 0.1, 0.1, 0.003, 0.003)$ in the native units of $(V_0, \phi, \theta, a, b)$ (m/s for speed, degrees for angles, and unitless for spin). Outcome prediction is therefore inherently stochastic, and agents must be robust to this uncertainty.
 
 \textbf{Sparse and Discontinuous Rewards:} Most randomly sampled shots produce no pocketed balls and may trigger fouls; useful feedback is sparse and highly non-smooth due to pot-or-fail outcomes under stochastic action noise.
 
@@ -417,7 +417,7 @@ This section narrates the \textit{three core milestones} of our agent, while tre
 
 \textbf{Key Lesson:} \textit{Allocate the limited computational budget primarily to a refined set of high-quality candidates, and refine locally only when needed.}
 
-\textbf{Failed Attempt (Naive CMA-ES Without Pruning):} Before introducing pruning and layered evaluation, we experimented with applying CMA-ES more broadly (larger candidate pools and more frequent refinement). This quickly became impractical because each fitness evaluation requires an expensive stochastic rollout. The ablation ``w/o Geometric Pruning'' quantifies this bottleneck: removing pruning increases the average game time to 74.0\,s and raises the over-budget rate to 4.2\% (Table~\ref{table_ablation}), even though it retains the rest of the pipeline. This evidence supports our core design choice: geometric pruning is necessary to make evolutionary refinement feasible under real-time constraints.
+\textbf{Failed Attempt (Naive CMA-ES Without Pruning):} Before introducing pruning and layered evaluation, we experimented with applying CMA-ES more broadly (larger candidate pools and more frequent refinement). This quickly became impractical because each fitness evaluation requires an expensive stochastic rollout. The ablation ``w/o Geometric Pruning'' quantifies this bottleneck: removing pruning increases the average game time to 52.9\,s (Table~\ref{table_ablation}), even though it retains the rest of the pipeline. This evidence supports our core design choice: geometric pruning is necessary to make evolutionary refinement feasible under real-time constraints.
 
 \subsection{Milestone 3: Final System (Risk Control + Strategy/Safety)}
 
@@ -546,13 +546,13 @@ To isolate each component's contribution, we run ablations by disabling one modu
 
 \textbf{Analysis:}
 \begin{itemize}
-    \item Geometric pruning is essential for wall-clock feasibility: as shown in the \textit{Over-180s Rate} column of Table~\ref{table_ablation}, removing pruning substantially increases over-budget games.
-    \item Selective CMA-ES refinement improves win rate at a moderate runtime cost; disabling it reduces compute but also reduces decision quality.
-    \item Strategy/safety terms stabilize play in low-reward states by preferring low-variance shots, especially when the 8-ball is close to a pocket.
-    \item Interestingly, adding a soft catastrophic-foul penalty can reduce win rate against BasicAgent in our setting; the default system relies on hard filtering and multi-stage verification to avoid instant-loss fouls, while the penalty term is treated as an optional conservative bias.
+    \item Geometric pruning is essential for wall-clock feasibility: removing pruning increases average time from 19.4\,s to 52.9\,s (Table~\ref{table_ablation}), reducing the available compute headroom for difficult states and making the pipeline more sensitive to hardware variation.
+    \item Selective CMA-ES refinement improves decision quality: disabling it drops win rate from 93.3\% to 85.0\% while increasing runtime from 19.4\,s to 24.6\,s (Table~\ref{table_ablation}).
+    \item Strategy/safety terms are critical under stochasticity: removing them reduces win rate to 76.7\% and increases runtime to 29.4\,s, with a non-zero over-180s rate (Table~\ref{table_ablation}).
+    \item Notably, introducing a soft penalty for catastrophic fouls does not improve performance in our setting: the default pipeline instead relies on hard rejection and multi-stage verification to mitigate instant-loss events under noise (Table~\ref{table_ablation}).
 \end{itemize}
 
-\textbf{Synergy Effect:} The full system outperforms the sum of isolated components, indicating beneficial interactions (e.g., pruning + CMA-ES is more effective than either alone; strategic bonuses + safety planner reinforce defensive play).
+\textbf{Synergy Effect:} These results indicate a non-additive interaction among modules: combining geometric pruning with selective CMA-ES and strategic terms yields a performance--runtime trade-off that is not attained by any single component in isolation (Table~\ref{table_ablation}).
 
 \subsection{Case Study: Critical Shot Decision}
 
@@ -581,7 +581,7 @@ Figure 5 illustrates a representative decision scenario where our agent's hybrid
 
 This paper presented a hybrid geometric-evolutionary approach to time-constrained 8-ball pool AI, demonstrating that domain-specific structural knowledge can dramatically accelerate black-box optimization without sacrificing decision quality. Through iterative engineering toward a within-time-budget architecture, we illustrated the trade-offs inherent in real-time intelligent systems.
 
-Our key contributions include: (1) intelligent Ghost Ball pruning reducing candidates by 30$\times$, (2) selective CMA-ES refinement applied only when necessary, (3) catastrophic-risk control targeting instant-loss fouls, and (4) strategic bonuses encoding positional and defensive reasoning. Under the course evaluation protocol, the final agent achieves \FinalWinVsBasic\ win rate against BasicAgent and \FinalWinVsPro\ against BasicAgentPro (Table~\ref{table_winrate}).
+Our key contributions include: (1) intelligent Ghost Ball pruning reducing candidates by $>$50$\times$ (from $\sim$450 to 8), (2) selective CMA-ES refinement applied only when necessary, (3) catastrophic-risk control targeting instant-loss fouls, and (4) strategic bonuses encoding positional and defensive reasoning. Under the course evaluation protocol, the final agent achieves \FinalWinVsBasic\ win rate against BasicAgent and \FinalWinVsPro\ against BasicAgentPro (Table~\ref{table_winrate}).
 
 Ablation studies confirmed that each component contributes meaningfully, with synergistic effects when combined. Particularly, geometric pruning proves to be the critical enabler, allowing expensive evolution strategies to be applied selectively rather than exhaustively.
 
