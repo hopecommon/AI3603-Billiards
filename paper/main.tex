@@ -478,7 +478,11 @@ This pipeline achieves a competitive balance between win rate and decision time 
 
 \textbf{Tournament Size:} Unless otherwise noted, we set $N=120$ games per matchup (as reflected in Table~\ref{table_winrate} and Table~\ref{table_ablation}).
 
-\textbf{Hardware:} Intel Xeon Gold 6248R CPU (3.0 GHz), 64 GB RAM, Ubuntu 22.04, Python 3.13.
+\textbf{Hardware:} Apple Mac mini (M4, arm64), macOS 15.6, Python 3.10.19.
+
+\textbf{Code Release:} The full codebase, experiment scripts, and paper build pipeline are available at \url{https://github.com/hopecommon/AI3603-Billiards}.
+
+\textbf{Dependency Management:} The repository pins dependencies via `pyproject.toml`/`uv.lock` and can be reproduced with \texttt{uv sync} under Python 3.10.
 
 \textbf{Hyperparameters:} Table \ref{table:hyperparams} lists the empirically tuned hyperparameters used throughout experiments. These values were determined through targeted tuning during Milestones 2--3 development (Section V).
 
@@ -632,9 +636,10 @@ In summary, this work demonstrates that intelligent integration of domain knowle
 
 \textbf{Yifan Yang (523030910054):}
 \begin{itemize}
-    \item \textit{Environment setup and evaluation infrastructure:} Prepared the local evaluation environment, validated baseline agents, and supported tournament-style testing and reproducibility checks.
-    \item \textit{Hyperparameter tuning and robustness improvements:} Performed targeted tuning (e.g., pruning thresholds, sampling schedules, and strategy weights) and proposed refinements that improved win rate and stability under noise.
-    \item \textit{Experiment support and review:} Assisted with experimental design/verification and provided feedback on analysis and presentation for the final report.
+    \item \textit{Evaluation infrastructure and reproducibility:} Prepared and maintained the evaluation environment, validated baseline agents, and ensured tournament-style testing is reproducible across machines and seeds.
+    \item \textit{Ablation study leadership:} Led the design and execution of ablation experiments (Table~\ref{table_ablation}), including selecting ablation variants, running large-$N$ match suites, and cross-checking summaries/plots for consistency.
+    \item \textit{Hyperparameter tuning and robustness:} Performed targeted tuning and stress testing (candidate caps, sampling schedules, pruning thresholds, and strategy weights), contributing to improved win rate and runtime stability under stochastic action noise.
+    \item \textit{Review and quality control:} Systematically reviewed results, figures, and manuscript consistency (numbers, units, and captions), and provided feedback that improved clarity and compliance with course requirements.
 \end{itemize}
 
 

@@ -1,18 +1,86 @@
 # AI3603-Billiards
-AI3603课程台球大作业
 
-## 关键文件说明
+AI3603 course project: a pool (8-ball) agent built on the provided `PoolEnv` simulator, with reproducible experiments and an IEEE-format report.
 
-| 文件 | 作用 | 在最终测试中是否可修改 |
-|------|------|-----------|
-| `poolenv.py` | 台球环境（游戏规则） | ❌ 不可修改 |
-| `agents`文件夹 | Agent 定义（在 `new_agent.py` 中实现你的算法） | ✅ 可修改 `new_agent.py` |
-| `evaluate.py` | 评估脚本（运行对战） | ✅ 可修改 `agent_b` |
-| `PROJECT_GUIDE.md` | 项目详细指南 | 📖 参考文档 |
-| `GAME_RULES.md` | 游戏规则说明 | 📖 参考文档 |
+## Repository Layout
 
-对作业内容的视频说明：
-说明.mp4：https://pan.sjtu.edu.cn/web/share/da9459405eac6252d01c249c3bcb989f
-供大家参考，以文字说明为准。
+| Path | What it is | Notes |
+|---|---|---|
+| `poolenv.py` | Environment + rules | Course-provided; treat as read-only for final evaluation |
+| `agents/` | Agents | `agents/new_agent.py` exports `NewAgent` (our final agent) |
+| `evaluate.py` | Local quick evaluation | Useful for manual debugging |
+| `experiments/` | Reproducible tournament runner | Produces structured `summary.json` outputs |
+| `scripts/refresh_paper_data.sh` | Paper data pipeline | Runs suite → generates tables → regenerates figures |
+| `paper/` | IEEE report | `paper/main.tex`, `paper/generate_figures.py` |
 
----
+## Environment Setup (Recommended: Python 3.10 + uv)
+
+We recommend Python **3.10** (the paper results were produced on macOS arm64 with Python 3.10.19).
+
+1) Install `uv` (see https://github.com/astral-sh/uv)
+
+2) Sync dependencies from `pyproject.toml` / `uv.lock`:
+
+```bash
+uv sync --python 3.10
+```
+
+3) Sanity check key deps:
+
+```bash
+uv run python -c "import pooltool, cma, numpy; print('ok')"
+```
+
+### Alternative (pip)
+
+If you do not use `uv`, make sure at least `cma` and `pooltool-billiards` are installed:
+
+```bash
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+python -c "import pooltool, cma; print('ok')"
+```
+
+## Quick Run (Smoke Test)
+
+Run a small match with verbose logs:
+
+```bash
+python experiments/run_match.py --agent-a BasicAgent --agent-b NewAgent \
+  --agent-b-config experiments/configs/final.json \
+  --n-games 1 --seed 42 --fixed-seed \
+  --progress --out /tmp/match_smoke
+```
+
+## Reproducing Paper Results
+
+One command to regenerate the paper data pipeline:
+
+```bash
+bash scripts/refresh_paper_data.sh -f
+```
+
+Artifacts:
+- `paper/results/summary.json` (authoritative numbers)
+- `paper/results/generated_results.tex` (LaTeX macros)
+- `paper/results/generated_table_*.tex` (LaTeX tables)
+- `paper/figure*.pdf` (figures used in the report)
+
+## Building the Report (PDF)
+
+CI-style build:
+
+```bash
+bash paper/compile_ci.sh
+```
+
+Interactive build (opens `.aux`/`bbl` as needed):
+
+```bash
+cd paper && ./compile.sh
+```
+
+## Notes
+
+- Runtime metrics depend on hardware; always report the structured suite outputs (`paper/results/summary.json`) rather than ad-hoc logs.
+- The 180s budget used in plots/tables is a reference budget (slight overruns may be tolerated by the evaluation harness).
