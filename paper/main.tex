@@ -256,7 +256,8 @@ While Ghost Ball provides excellent initial estimates, collision physics and spi
 CMA-ES maintains a Gaussian search distribution $\mathcal{N}(\mathbf{m}, \sigma^2 \mathbf{C})$. We provide a simplified description of its mean and covariance adaptation:
 \begin{align}
 \mathbf{m}^{(g+1)} &= \mathbf{m}^{(g)} + \sum_{i=1}^{\mu} w_i \mathbf{x}_i^{(g)} \\
-\mathbf{C}^{(g+1)} &= (1 - c_{\text{cov}}) \mathbf{C}^{(g)} + c_{\text{cov}} \sum_{i=1}^{\mu} w_i (\mathbf{x}_i^{(g)} - \mathbf{m}^{(g)})(\mathbf{x}_i^{(g)} - \mathbf{m}^{(g)})^\top
+\mathbf{C}^{(g+1)} &= (1 - c_{\text{cov}}) \mathbf{C}^{(g)} \nonumber\\
+&\quad + c_{\text{cov}} \sum_{i=1}^{\mu} w_i (\mathbf{x}_i^{(g)} - \mathbf{m}^{(g)})(\mathbf{x}_i^{(g)} - \mathbf{m}^{(g)})^\top
 \end{align}
 
 where $\mathbf{x}_i^{(g)}$ are ranked samples, $w_i$ are recombination weights, and $c_{\text{cov}}$ is the covariance adaptation rate.
