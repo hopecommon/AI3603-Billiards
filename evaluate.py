@@ -1,6 +1,6 @@
 """
 evaluate.py - Agent 评估脚本
-uv run python -u evaluate.py | tee debug.log
+
 
 功能：
 - 让两个 Agent 进行多局对战
