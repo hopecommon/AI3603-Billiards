@@ -1,0 +1,313 @@
+{
+  "suite": "paper_suite",
+  "matches": [
+    {
+      "id": "final_vs_basic",
+      "out": "paper/results/final_vs_basic",
+      "summary": {
+        "match": {
+          "agent_a": "BasicAgent",
+          "agent_b": "NewAgent",
+          "agent_a_config": null,
+          "agent_b_config": "experiments/configs/final.json",
+          "n_games": 120,
+          "target_rotation": [
+            "solid",
+            "solid",
+            "stripe",
+            "stripe"
+          ],
+          "swap_every_game": true,
+          "time_limit_s": 180.0,
+          "fixed_seed": true,
+          "seed": 42
+        },
+        "results": {
+          "wins_by_role": {
+            "agent_a": 8,
+            "agent_b": 112,
+            "SAME": 0
+          },
+          "win_rate_agent_a": 0.06666666666666667,
+          "win_rate_agent_b": 0.9333333333333333,
+          "draw_rate": 0.0,
+          "over_budget_rate": 0.0,
+          "budget_s": 180.0,
+          "avg_game_time_s": 19.42656320350907,
+          "median_game_time_s": 17.42089179198956,
+          "p95_game_time_s": 40.2538321250031,
+          "max_game_time_s": 71.79158220801037
+        },
+        "environment": {
+          "python": "3.10.19",
+          "platform": "macOS-15.6-arm64-arm-64bit",
+          "processor": "arm"
+        }
+      }
+    },
+    {
+      "id": "final_vs_pro",
+      "out": "paper/results/final_vs_pro",
+      "summary": {
+        "match": {
+          "agent_a": "BasicAgentPro",
+          "agent_b": "NewAgent",
+          "agent_a_config": null,
+          "agent_b_config": "experiments/configs/final.json",
+          "n_games": 120,
+          "target_rotation": [
+            "solid",
+            "solid",
+            "stripe",
+            "stripe"
+          ],
+          "swap_every_game": true,
+          "time_limit_s": 180.0,
+          "fixed_seed": true,
+          "seed": 42
+        },
+        "results": {
+          "wins_by_role": {
+            "agent_a": 60,
+            "agent_b": 60,
+            "SAME": 0
+          },
+          "win_rate_agent_a": 0.5,
+          "win_rate_agent_b": 0.5,
+          "draw_rate": 0.0,
+          "over_budget_rate": 0.0,
+          "budget_s": 180.0,
+          "avg_game_time_s": 23.37337994826715,
+          "median_game_time_s": 23.461990833005984,
+          "p95_game_time_s": 38.50541174999671,
+          "max_game_time_s": 65.62410525001178
+        },
+        "environment": {
+          "python": "3.10.19",
+          "platform": "macOS-15.6-arm64-arm-64bit",
+          "processor": "arm"
+        }
+      }
+    },
+    {
+      "id": "ablation_no_cma_vs_basic",
+      "out": "paper/results/ablation_no_cma_vs_basic",
+      "summary": {
+        "match": {
+          "agent_a": "BasicAgent",
+          "agent_b": "NewAgent",
+          "agent_a_config": null,
+          "agent_b_config": "experiments/configs/no_cma.json",
+          "n_games": 120,
+          "target_rotation": [
+            "solid",
+            "solid",
+            "stripe",
+            "stripe"
+          ],
+          "swap_every_game": true,
+          "time_limit_s": 180.0,
+          "fixed_seed": true,
+          "seed": 42
+        },
+        "results": {
+          "wins_by_role": {
+            "agent_a": 18,
+            "agent_b": 102,
+            "SAME": 0
+          },
+          "win_rate_agent_a": 0.15,
+          "win_rate_agent_b": 0.85,
+          "draw_rate": 0.0,
+          "over_budget_rate": 0.0,
+          "budget_s": 180.0,
+          "avg_game_time_s": 24.649999874658654,
+          "median_game_time_s": 22.71519708300184,
+          "p95_game_time_s": 46.56713900000614,
+          "max_game_time_s": 61.11607683300099
+        },
+        "environment": {
+          "python": "3.10.19",
+          "platform": "macOS-15.6-arm64-arm-64bit",
+          "processor": "arm"
+        }
+      }
+    },
+    {
+      "id": "ablation_no_pruning_vs_basic",
+      "out": "paper/results/ablation_no_pruning_vs_basic",
+      "summary": {
+        "match": {
+          "agent_a": "BasicAgent",
+          "agent_b": "NewAgent",
+          "agent_a_config": null,
+          "agent_b_config": "experiments/configs/no_pruning.json",
+          "n_games": 120,
+          "target_rotation": [
+            "solid",
+            "solid",
+            "stripe",
+            "stripe"
+          ],
+          "swap_every_game": true,
+          "time_limit_s": 180.0,
+          "fixed_seed": true,
+          "seed": 42
+        },
+        "results": {
+          "wins_by_role": {
+            "agent_a": 13,
+            "agent_b": 107,
+            "SAME": 0
+          },
+          "win_rate_agent_a": 0.10833333333333334,
+          "win_rate_agent_b": 0.8916666666666667,
+          "draw_rate": 0.0,
+          "over_budget_rate": 0.0,
+          "budget_s": 180.0,
+          "avg_game_time_s": 52.907121519775316,
+          "median_game_time_s": 50.6199818749883,
+          "p95_game_time_s": 79.43965125000977,
+          "max_game_time_s": 127.46490183299466
+        },
+        "environment": {
+          "python": "3.10.19",
+          "platform": "macOS-15.6-arm64-arm-64bit",
+          "processor": "arm"
+        }
+      }
+    },
+    {
+      "id": "ablation_no_strategy_vs_basic",
+      "out": "paper/results/ablation_no_strategy_vs_basic",
+      "summary": {
+        "match": {
+          "agent_a": "BasicAgent",
+          "agent_b": "NewAgent",
+          "agent_a_config": null,
+          "agent_b_config": "experiments/configs/no_strategy.json",
+          "n_games": 120,
+          "target_rotation": [
+            "solid",
+            "solid",
+            "stripe",
+            "stripe"
+          ],
+          "swap_every_game": true,
+          "time_limit_s": 180.0,
+          "fixed_seed": true,
+          "seed": 42
+        },
+        "results": {
+          "wins_by_role": {
+            "agent_a": 28,
+            "agent_b": 92,
+            "SAME": 0
+          },
+          "win_rate_agent_a": 0.23333333333333334,
+          "win_rate_agent_b": 0.7666666666666667,
+          "draw_rate": 0.0,
+          "over_budget_rate": 0.008333333333333333,
+          "budget_s": 180.0,
+          "avg_game_time_s": 29.3658924413161,
+          "median_game_time_s": 18.401442417001817,
+          "p95_game_time_s": 36.51297883299412,
+          "max_game_time_s": 1179.686570542006
+        },
+        "environment": {
+          "python": "3.10.19",
+          "platform": "macOS-15.6-arm64-arm-64bit",
+          "processor": "arm"
+        }
+      }
+    },
+    {
+      "id": "ablation_with_catastrophic_penalty_vs_basic",
+      "out": "paper/results/ablation_with_catastrophic_penalty_vs_basic",
+      "summary": {
+        "match": {
+          "agent_a": "BasicAgent",
+          "agent_b": "NewAgent",
+          "agent_a_config": null,
+          "agent_b_config": "experiments/configs/with_catastrophic_penalty.json",
+          "n_games": 120,
+          "target_rotation": [
+            "solid",
+            "solid",
+            "stripe",
+            "stripe"
+          ],
+          "swap_every_game": true,
+          "time_limit_s": 180.0,
+          "fixed_seed": true,
+          "seed": 42
+        },
+        "results": {
+          "wins_by_role": {
+            "agent_a": 19,
+            "agent_b": 101,
+            "SAME": 0
+          },
+          "win_rate_agent_a": 0.15833333333333333,
+          "win_rate_agent_b": 0.8416666666666667,
+          "draw_rate": 0.0,
+          "over_budget_rate": 0.0,
+          "budget_s": 180.0,
+          "avg_game_time_s": 19.794053091658377,
+          "median_game_time_s": 17.35828145800042,
+          "p95_game_time_s": 40.39455133299634,
+          "max_game_time_s": 53.63296883298608
+        },
+        "environment": {
+          "python": "3.10.19",
+          "platform": "macOS-15.6-arm64-arm-64bit",
+          "processor": "arm"
+        }
+      }
+    },
+    {
+      "id": "ablation_ghost_only_vs_basic",
+      "out": "paper/results/ablation_ghost_only_vs_basic",
+      "summary": {
+        "match": {
+          "agent_a": "BasicAgent",
+          "agent_b": "NewAgent",
+          "agent_a_config": null,
+          "agent_b_config": "experiments/configs/ghost_only.json",
+          "n_games": 120,
+          "target_rotation": [
+            "solid",
+            "solid",
+            "stripe",
+            "stripe"
+          ],
+          "swap_every_game": true,
+          "time_limit_s": 180.0,
+          "fixed_seed": true,
+          "seed": 42
+        },
+        "results": {
+          "wins_by_role": {
+            "agent_a": 22,
+            "agent_b": 98,
+            "SAME": 0
+          },
+          "win_rate_agent_a": 0.18333333333333332,
+          "win_rate_agent_b": 0.8166666666666667,
+          "draw_rate": 0.0,
+          "over_budget_rate": 0.0,
+          "budget_s": 180.0,
+          "avg_game_time_s": 15.605252049307333,
+          "median_game_time_s": 14.780710082995938,
+          "p95_game_time_s": 27.485356249992037,
+          "max_game_time_s": 32.3970771250024
+        },
+        "environment": {
+          "python": "3.10.19",
+          "platform": "macOS-15.6-arm64-arm-64bit",
+          "processor": "arm"
+        }
+      }
+    }
+  ]
+}

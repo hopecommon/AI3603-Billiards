@@ -1,0 +1,40 @@
+{
+  "match": {
+    "agent_a": "BasicAgent",
+    "agent_b": "NewAgent",
+    "agent_a_config": null,
+    "agent_b_config": "experiments/configs/no_pruning.json",
+    "n_games": 120,
+    "target_rotation": [
+      "solid",
+      "solid",
+      "stripe",
+      "stripe"
+    ],
+    "swap_every_game": true,
+    "time_limit_s": 180.0,
+    "fixed_seed": true,
+    "seed": 42
+  },
+  "results": {
+    "wins_by_role": {
+      "agent_a": 13,
+      "agent_b": 107,
+      "SAME": 0
+    },
+    "win_rate_agent_a": 0.10833333333333334,
+    "win_rate_agent_b": 0.8916666666666667,
+    "draw_rate": 0.0,
+    "over_budget_rate": 0.0,
+    "budget_s": 180.0,
+    "avg_game_time_s": 52.907121519775316,
+    "median_game_time_s": 50.6199818749883,
+    "p95_game_time_s": 79.43965125000977,
+    "max_game_time_s": 127.46490183299466
+  },
+  "environment": {
+    "python": "3.10.19",
+    "platform": "macOS-15.6-arm64-arm-64bit",
+    "processor": "arm"
+  }
+}
