@@ -221,3 +221,4 @@ __marimo__/
 # Paper experiment artifacts (keep aggregated summary + generated tables/macros)
 paper/results_smoke/
 paper/results/**/games.jsonl
+.DS_Store
