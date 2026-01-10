@@ -25,6 +25,8 @@ We recommend Python **3.10** (the paper results were produced on macOS arm64 wit
 uv sync --python 3.10
 ```
 
+**⚠️ Important:** The `--python 3.10` flag is **required** when using `uv sync`. Without it, `uv` may default to Python 3.12+ which will fail due to missing `panda3d` wheels for those versions. If you see dependency resolution errors mentioning `panda3d` or `pooltool-billiards`, ensure you're using Python 3.10 explicitly.
+
 3) Sanity check key deps:
 
 ```bash
@@ -40,6 +42,8 @@ python -m pip install -U pip
 python -m pip install -r requirements.txt
 python -c "import pooltool, cma; print('ok')"
 ```
+
+When using `pip`, ensure you're using Python 3.10 (not 3.12+) to avoid dependency conflicts with `panda3d`.
 
 ## Quick Run (Smoke Test)
 
