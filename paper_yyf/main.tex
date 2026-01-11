@@ -1,0 +1,220 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%2345678901234567890123456789012345678901234567890123456789012345678901234567890
+%        1         2         3         4         5         6         7         8
+
+\documentclass[letterpaper, 10 pt, conference]{ieeeconf}  % Comment this line out
+                                                          % if you need a4paper
+%\documentclass[a4paper, 10pt, conference]{ieeeconf}      % Use this line for a4
+                                                          % paper
+
+\IEEEoverridecommandlockouts                              % This command is only  
+                                                          % needed if you want to
+                                                          % use the \thanks command  
+\overrideIEEEmargins
+% See the \addtolength command later in the file to balance the column lengths  
+% on the last page of the document
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+
+% The following packages can be found on http:\\www.ctan.org
+\usepackage{graphics} % for pdf, bitmapped graphics files
+\usepackage{epsfig} % for postscript graphics files
+\usepackage{amsmath} % assumes amsmath package installed
+\usepackage{amssymb}  % assumes amsmath package installed
+\usepackage{cite}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{url} % for URLs in bibliography and text
+\usepackage[hidelinks]{hyperref}
+
+% Make citations clickable under ieeeconf.cls (which redefines \@citex).
+\makeatletter
+\def\@citex[#1]#2{%
+  \let\@citea\@empty
+  \@cite{%
+    \@for\@citeb:=#2\do{%
+      \@citea\def\@citea{], [}%
+      \edef\@citeb{\expandafter\@firstofone\@citeb\@empty}%
+      \if@filesw\immediate\write\@auxout{\string\citation{\@citeb}}\fi
+      \@ifundefined{b@\@citeb}{\mbox{\reset@font\bfseries ?}%
+          \@latex@warning{Citation `\@citeb' on page \thepage \space undefined}}%
+        {\hyper@linkstart{cite}{cite.\@citeb}%
+         \hbox{\csname b@\@citeb\endcsname}%
+         \hyper@linkend}%
+    }%
+  }{#1}%
+}
+
+% Add explicit citation anchors for ieeeconf.cls + BibTeX.
+\let\H@old@bibitem\@bibitem
+\def\@bibitem#1{%
+  \Hy@raisedlink{\hyper@anchorstart{cite.#1}\hyper@anchorend}%
+  \H@old@bibitem{#1}%
+}
+\let\H@old@lbibitem\@lbibitem
+\def\@lbibitem[#1]#2{%
+  \Hy@raisedlink{\hyper@anchorstart{cite.#2}\hyper@anchorend}%
+  \H@old@lbibitem[{#1}]{#2}%
+}
+\makeatother
+
+% Auto-generated experiment results (tables + macros).
+\input{results/generated_results.tex}
+
+\title{\LARGE \bf
+Performance-Efficiency Trade-off in High-Performance 8-Ball Pool AI: \\
+An Ablation Study of Geometric Pruning and Evolutionary Refinement
+}
+
+\author{Yifan Yang (Student ID: 523030910054)$^{1}$ and Jifan Lin (Student ID: 523030910057)$^{1}$%
+\thanks{$^{1}$Shanghai Jiao Tong University. Emails: ontise33@sjtu.edu.cn; ljf2570@sjtu.edu.cn}%
+\thanks{*This work was completed as part of the AI3603 Artificial Intelligence: Principles and Techniques course project at Shanghai Jiao Tong University.}}
+
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+\pagestyle{empty}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{abstract}
+
+Developing autonomous agents for billiards requires balancing high-precision physical control with strict real-time constraints. This report presents an optimized 8-ball pool AI agent that leverages a multi-stage decision pipeline combining Ghost Ball geometric heuristics with Covariance Matrix Adaptation Evolution Strategy (CMA-ES). We focus on the systematic evaluation of the system's core modules—geometric pruning, layered sampling evaluation, and strategic safety logic—through a comprehensive ablation study. Our results demonstrate that while geometric priors significantly reduce search space (from hundreds to fewer than ten candidates), evolutionary refinement and strategic risk assessment are essential for maintaining high win rates under action noise. The final system achieves a \FinalWinVsBasic\ win rate against the baseline agent while maintaining an average game time of \FinalAvgTimeVsBasic\,s, satisfying the competition's computational budget.
+
+\end{abstract}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{INTRODUCTION}
+
+The game of 8-ball pool presents a challenging environment for artificial intelligence, characterized by continuous action spaces, complex collision dynamics, and inherent environmental noise. A successful agent must not only possess high-level strategic reasoning but also precise low-level control to handle stochastic perturbations.
+
+This report details the implementation and evaluation of a high-performance 8-ball pool AI. The core contribution highlighted here is the **systematic ablation study** used to quantify the performance contributions of various architectural components. We explore the trade-offs between decision quality (measured by win rate) and computational efficiency (measured by wall-clock time), specifically focusing on how geometric pruning and evolutionary optimization contribute to the agent's overall performance.
+
+The remainder of this report is organized as follows: Section II formulates the problem. Section III describes the methodology, replacing implementation details with formal logic. Section IV presents the ablation study design and experimental results. Section V concludes the report.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{PROBLEM FORMULATION}
+
+We model the 8-ball pool decision process as a search for an optimal action $\mathbf{a}^*$ in a continuous 5D space:
+\begin{equation}
+\mathbf{a} = (V_0, \phi, \theta, a, b) \in \mathbb{R}^5
+\end{equation}
+where $V_0$ is initial velocity, $\phi$ is azimuthal angle, $\theta$ is elevation angle, and $(a, b)$ are spin components. The goal is to maximize the expected reward $\mathbb{E}[R(\mathbf{a}, \mathbf{s})]$ under action noise $\epsilon \sim \mathcal{N}(\mathbf{0}, \Sigma)$, where $\Sigma$ is a diagonal covariance matrix representing simulator-injected noise.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{METHODOLOGY}
+
+Our agent architecture follows a multi-stage "filter-and-refine" pipeline designed to minimize expensive physics simulations while maximizing shot quality.
+
+\subsection{Candidate Generation and Pruning}
+We use the Ghost Ball geometric principle to generate initial candidates. For a target ball $T$ and pocket $P$, the desired collision point (ghost ball center) $\mathbf{p}_G$ is defined as:
+\begin{equation}
+\mathbf{p}_G = \mathbf{p}_T - 2R \cdot \frac{\mathbf{p}_P - \mathbf{p}_T}{\|\mathbf{p}_P - \mathbf{p}_T\|}
+\end{equation}
+where $R$ is the ball radius. We prune the search space by only considering the nearest $k$ target balls and checking path feasibility using a safety margin $2.5R$ around the cue-to-ghost trajectory.
+
+\subsection{Layered Evaluation Logic}
+To handle stochasticity efficiently, we implement a layered evaluation strategy. Instead of a fixed number of samples for all actions, we use a progressive approach as described in Algorithm~\ref{alg:layered_eval}.
+
+\begin{algorithm}[h]
+\caption{Layered Action Evaluation}
+\label{alg:layered_eval}
+\begin{algorithmic}[1]
+\Require Action $\mathbf{a}$, State $\mathbf{s}$, Samples $n$
+\Ensure Expected Score $\bar{R}$, Risk Statistics $S$
+\State $Scores \gets \emptyset, Fouls \gets 0$
+\For{$i = 1$ \textbf{to} $n$}
+    \State $\tilde{\mathbf{a}} \gets \mathbf{a} + \epsilon_i, \epsilon_i \sim \mathcal{N}(\mathbf{0}, \Sigma)$
+    \State $\mathbf{s}' \gets \text{Simulate}(\tilde{\mathbf{a}}, \mathbf{s})$
+    \State $r \gets \text{CalculateReward}(\mathbf{s}')$
+    \State $Scores \gets Scores \cup \{r\}$
+    \If{IsCatastrophicFoul($\mathbf{s}'$)}
+        \State $Fouls \gets Fouls + 1$
+    \EndIf
+\EndFor
+\State $\bar{R} \gets \text{Average}(Scores)$
+\If{$Fouls > 0$} \Comment{Hard Catastrophic Filter}
+    \State $\bar{R} \gets -\infty$
+\EndIf
+\State \Return $\bar{R}, \{Fouls\}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{CMA-ES Local Refinement}
+Promising candidates are refined using CMA-ES \cite{hansen2001cma}. The optimization objective is the expected reward under noise. To stay within time limits, we use a small population $\lambda=4$ and limited generations $g=2$, triggered only if the initial geometric solution's score $R < 60$.
+
+\subsection{Strategic and Safety Rewards}
+The total reward $R$ is augmented with strategic components:
+\begin{equation}
+R_{\text{total}} = R_{\text{pot}} + R_{\text{foul}} + w_{\text{pos}} f_{\text{pos}}(\mathbf{s}') + w_{\text{def}} f_{\text{def}}(\mathbf{s}')
+\end{equation}
+where $f_{\text{pos}}$ rewards cue ball proximity to the next target and $f_{\text{def}}$ penalizes opponent potting opportunities.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{EXPERIMENTS AND ABLATION STUDY}
+
+We evaluate the system against the provided `BasicAgent` over 120 games. The hardware environment is an Apple M4 Mac mini.
+
+\subsection{Ablation Design}
+To quantify the impact of each module, we define several variants:
+\begin{itemize}
+    \item \textbf{Full System:} The complete pipeline with all optimizations.
+    \item \textbf{Ghost Ball Only:} Pure geometric aiming without CMA-ES or strategic bonuses.
+    \item \textbf{w/o CMA-ES:} Disables evolutionary refinement.
+    \item \textbf{w/o Geometric Pruning:} Disables heuristic filtering, expanding the candidate search.
+    \item \textbf{w/o Strategy/Safety:} Disables positional and defensive rewards.
+    \item \textbf{+ Catastrophic Penalty:} Uses a soft penalty for fouls instead of the hard $-\infty$ filter.
+\end{itemize}
+
+\subsection{Results and Analysis}
+
+Table~\ref{table_ablation} summarizes the performance and efficiency of each variant.
+
+\input{results/generated_table_ablation.tex}
+
+\textbf{1) Efficiency of Pruning:} Removing geometric pruning causes the average game time to spike from 19.4\,s to 52.9\,s without improving win rate. This confirms that the geometric prior is highly effective at identifying the relevant regions of the action space.
+
+\textbf{2) Impact of CMA-ES:} Disabling CMA-ES results in an 8.3\% drop in win rate. While Ghost Ball provides a good start, local refinement is necessary to account for the non-linearities of spin and multi-ball collisions.
+
+\textbf{3) Necessity of Strategy:} The most significant drop in win rate (from 93.3\% to 76.7\%) occurs when strategic and safety logic is removed. This underscores that in competitive pool, positioning and risk management are as important as potting accuracy.
+
+\textbf{4) Performance-Efficiency Frontier:} Figure~\ref{fig:evolution} illustrates the trade-off. The Full System represents a near-optimal point on the Pareto frontier, achieving high performance within a narrow time budget.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.48\textwidth]{figure3_evolution.pdf}
+\caption{Ablation Study: Performance-Efficiency Trade-off. The Full System (star) achieves the best balance between win rate and wall-clock time.}
+\label{fig:evolution}
+\end{figure}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{CONCLUSION}
+
+Our ablation study reveals that a multi-stage approach is essential for high-performance billiards AI under time constraints. Geometric pruning serves as a critical speed enabler, while CMA-ES and strategic rewards provide the necessary robustness and competitive edge. The integrated system demonstrates a superior balance of speed and skill, successfully meeting the requirements of the task.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section*{DIVISION OF LABOR}
+
+\textbf{Yifan Yang (523030910054):}
+\begin{itemize}
+    \item \textbf{Ablation Study Leadership:} Designed and executed the systematic ablation experiments, analyzed the results, and produced the performance-efficiency trade-off analysis.
+    \item \textbf{Infrastructure and Reproducibility:} Maintained the evaluation suite and ensured consistency across experiment runs.
+    \item \textbf{Hyperparameter Tuning:} Optimized sampling schedules and strategic weights.
+\end{itemize}
+
+\textbf{Jifan Lin (523030910057):}
+\begin{itemize}
+    \item \textbf{Algorithm Design:} Implemented the core hybrid Ghost Ball + CMA-ES pipeline.
+    \item \textbf{Engineering:} Optimized the physics simulation interface and bottlenecked code sections.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
+
